@@ -1,0 +1,28 @@
+# Node
+node_modules/
+dist/
+*.log
+npm-debug.log*
+*.tsbuildinfo
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# Environment
+.env
+.env.local
+.env.*
+!.env.example
+
+# Archon Hub runtime
+state/*
+!state/.gitkeep
+
+# Cloned repos workspace
+repos/*
+!repos/.gitkeep

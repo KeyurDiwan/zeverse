@@ -1,0 +1,30 @@
+import dotenv from "dotenv";
+import path from "path";
+
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+
+import express from "express";
+import cors from "cors";
+import { workflowRoutes } from "./routes/workflows";
+import { runRoutes } from "./routes/runs";
+import { repoRoutes } from "./routes/repos";
+
+const app = express();
+const PORT = parseInt(process.env.ARCHON_SERVER_PORT ?? "3100", 10);
+
+app.use(cors());
+app.use(express.json({ limit: "2mb" }));
+
+app.use("/api", repoRoutes);
+app.use("/api", workflowRoutes);
+app.use("/api", runRoutes);
+
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok" });
+});
+
+app.listen(PORT, () => {
+  console.log(`Archon Hub server listening on http://localhost:${PORT}`);
+});
+
+export default app;

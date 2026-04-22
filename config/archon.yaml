@@ -1,0 +1,15 @@
+llm:
+  provider: custom
+  model: anthropic-claude-4-6-opus
+  base_url: ${CLOUDVERSE_BASE_URL}
+  api_key: ${CLOUDVERSE_API_KEY}
+  max_tokens: 4096
+  temperature: 0.2
+
+runner:
+  timeout_ms: 300000
+
+paths:
+  repos_file: repos.json
+  state_dir: state
+  clone_dir: repos

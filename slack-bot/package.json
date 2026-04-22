@@ -1,0 +1,20 @@
+{
+  "name": "archon-hub-slack-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Slack bot for triggering Archon Hub workflows across multiple repos",
+  "scripts": {
+    "dev": "ts-node --transpile-only src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@slack/bolt": "^4.1.0",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.12.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  }
+}
