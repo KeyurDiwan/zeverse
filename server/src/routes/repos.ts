@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { addGitRepo, addLocalRepo, listRepos, removeRepo } from "../repos";
+import { addGitRepo, listRepos, removeRepo } from "../repos";
 
 export const repoRoutes = Router();
 
@@ -9,17 +9,14 @@ repoRoutes.get("/repos", (_req: Request, res: Response) => {
 
 repoRoutes.post("/repos", (req: Request, res: Response) => {
   try {
-    const { path: localPath, url, name } = req.body ?? {};
+    const { url, name } = req.body ?? {};
 
-    if (!localPath && !url) {
-      res.status(400).json({ error: "Either 'path' or 'url' is required" });
+    if (!url) {
+      res.status(400).json({ error: "'url' is required" });
       return;
     }
 
-    const repo = url
-      ? addGitRepo({ url, name })
-      : addLocalRepo({ path: localPath, name });
-
+    const repo = addGitRepo({ url, name });
     res.status(201).json({ repo });
   } catch (err: any) {
     res.status(400).json({ error: err.message });

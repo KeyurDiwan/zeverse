@@ -4,7 +4,7 @@ import { findWorkflow } from "../workflows";
 import { requireRepo } from "../repos";
 import { startRun, getActiveRun } from "../runner";
 import { findStateByRunId, loadState, readLog } from "../runner/state";
-import { extractDocId, replyToComment } from "../integrations/gdocs";
+import { extractDocId, replyToComment, addComment, suggestEdits } from "../integrations/gdocs";
 
 export const runRoutes = Router();
 
@@ -85,6 +85,36 @@ runRoutes.post("/gdoc-reply", async (req: Request, res: Response) => {
     }
     const docId = extractDocId(rawDocId);
     const result = await replyToComment(docId, commentId, body);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+runRoutes.post("/gdoc-comment", async (req: Request, res: Response) => {
+  try {
+    const { docId: rawDocId, body } = req.body ?? {};
+    if (!rawDocId || !body) {
+      res.status(400).json({ error: "docId and body are required" });
+      return;
+    }
+    const docId = extractDocId(rawDocId);
+    const result = await addComment(docId, body);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+runRoutes.post("/gdoc-suggest", async (req: Request, res: Response) => {
+  try {
+    const { docId: rawDocId, edits } = req.body ?? {};
+    if (!rawDocId || !Array.isArray(edits)) {
+      res.status(400).json({ error: "docId and edits[] are required" });
+      return;
+    }
+    const docId = extractDocId(rawDocId);
+    const result = await suggestEdits(docId, edits);
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });

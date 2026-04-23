@@ -53,16 +53,6 @@ export async function fetchRepos(): Promise<Repo[]> {
   return data.repos;
 }
 
-export async function addLocalRepo(path: string, name?: string): Promise<Repo> {
-  const res = await fetch(`${BASE}/repos`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, name }),
-  });
-  const data = await json<{ repo: Repo }>(res);
-  return data.repo;
-}
-
 export async function addGitRepo(url: string, name?: string): Promise<Repo> {
   const res = await fetch(`${BASE}/repos`, {
     method: "POST",

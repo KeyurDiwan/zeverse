@@ -1,7 +1,5 @@
 import { useState } from "react";
-import { addGitRepo, addLocalRepo, type Repo } from "./api";
-
-type Mode = "local" | "git";
+import { addGitRepo, type Repo } from "./api";
 
 interface Props {
   onClose: () => void;
@@ -9,8 +7,6 @@ interface Props {
 }
 
 export default function AddRepoModal({ onClose, onAdded }: Props) {
-  const [mode, setMode] = useState<Mode>("local");
-  const [pathValue, setPathValue] = useState("");
   const [urlValue, setUrlValue] = useState("");
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -21,10 +17,7 @@ export default function AddRepoModal({ onClose, onAdded }: Props) {
     setSubmitting(true);
     setError(null);
     try {
-      const repo =
-        mode === "local"
-          ? await addLocalRepo(pathValue.trim(), name.trim() || undefined)
-          : await addGitRepo(urlValue.trim(), name.trim() || undefined);
+      const repo = await addGitRepo(urlValue.trim(), name.trim() || undefined);
       onAdded(repo);
       onClose();
     } catch (err: any) {
@@ -64,57 +57,23 @@ export default function AddRepoModal({ onClose, onAdded }: Props) {
         <div>
           <h2 style={{ fontSize: 18, fontWeight: 700 }}>Import repo</h2>
           <p style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 4 }}>
-            Register a local folder or clone a git repository into Archon Hub.
+            Import a git repository into Archon Hub. If already cloned locally
+            it will be reused.
           </p>
         </div>
 
-        <div style={{ display: "flex", gap: 8 }}>
-          {(["local", "git"] as Mode[]).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => setMode(m)}
-              style={{
-                flex: 1,
-                padding: "8px 12px",
-                background:
-                  mode === m ? "var(--accent)" : "var(--surface-hover)",
-                color: mode === m ? "#fff" : "var(--text-dim)",
-                border: "1px solid var(--border)",
-                borderRadius: 6,
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
-            >
-              {m === "local" ? "Local path" : "Git clone"}
-            </button>
-          ))}
-        </div>
-
-        {mode === "local" ? (
-          <Field
-            label="Absolute path"
-            placeholder="/Users/you/code/my-repo"
-            value={pathValue}
-            onChange={setPathValue}
-            required
-            mono
-          />
-        ) : (
-          <Field
-            label="Git URL"
-            placeholder="git@github.com:org/repo.git"
-            value={urlValue}
-            onChange={setUrlValue}
-            required
-            mono
-          />
-        )}
+        <Field
+          label="Git URL"
+          placeholder="git@github.com:org/repo.git"
+          value={urlValue}
+          onChange={setUrlValue}
+          required
+          mono
+        />
 
         <Field
           label="Display name (optional)"
-          placeholder="Defaults to folder name"
+          placeholder="Defaults to repo name"
           value={name}
           onChange={setName}
         />
@@ -154,13 +113,7 @@ export default function AddRepoModal({ onClose, onAdded }: Props) {
               cursor: submitting ? "not-allowed" : "pointer",
             }}
           >
-            {submitting
-              ? mode === "git"
-                ? "Cloning..."
-                : "Adding..."
-              : mode === "git"
-                ? "Clone & import"
-                : "Import"}
+            {submitting ? "Importing..." : "Import"}
           </button>
         </div>
       </form>

@@ -68,30 +68,21 @@ export function requireRepo(id: string): Repo {
   return repo;
 }
 
-export interface AddLocalRepoInput {
-  path: string;
-  name?: string;
-}
-
 export interface AddGitRepoInput {
   url: string;
   name?: string;
 }
 
-export function addLocalRepo(input: AddLocalRepoInput): Repo {
-  const abs = path.resolve(input.path);
-  if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
-    throw new Error(`Path does not exist or is not a directory: ${abs}`);
-  }
+function registerRepo(absPath: string, name: string, origin?: string): Repo {
   const store = readStore();
-  if (store.repos.some((r) => path.resolve(r.path) === abs)) {
-    throw new Error(`Repo already registered at path: ${abs}`);
-  }
-  const name = input.name?.trim() || path.basename(abs);
+  const existing = store.repos.find((r) => path.resolve(r.path) === absPath);
+  if (existing) return existing;
+
   const repo: Repo = {
     id: uniqueId(name, store.repos),
     name,
-    path: abs,
+    path: absPath,
+    origin,
     addedAt: new Date().toISOString(),
   };
   store.repos.push(repo);
@@ -112,7 +103,11 @@ export function addGitRepo(input: AddGitRepoInput): Repo {
   const target = path.join(cloneBase, inferredName);
 
   if (fs.existsSync(target)) {
-    throw new Error(`Target clone path already exists: ${target}`);
+    const gitDir = path.join(target, ".git");
+    if (!fs.existsSync(gitDir)) {
+      throw new Error(`Path exists but is not a git repo: ${target}`);
+    }
+    return registerRepo(target, inferredName, url);
   }
 
   const result = spawnSync("git", ["clone", url, target], {
@@ -124,7 +119,7 @@ export function addGitRepo(input: AddGitRepoInput): Repo {
     throw new Error(`git clone failed: ${err}`);
   }
 
-  return addLocalRepo({ path: target, name: inferredName });
+  return registerRepo(target, inferredName, url);
 }
 
 export function removeRepo(id: string): boolean {

@@ -23,7 +23,7 @@ function getClients(): { docs: docs_v1.Docs; drive: drive_v3.Drive } {
   const auth = new google.auth.GoogleAuth({
     credentials: creds,
     scopes: [
-      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/documents",
       "https://www.googleapis.com/auth/drive",
     ],
   });
@@ -160,3 +160,67 @@ export async function replyToComment(
     throw err;
   }
 }
+
+export interface SuggestEdit {
+  anchor: string;
+  replacement: string;
+}
+
+export interface SuggestEditsResult {
+  applied: number;
+  skipped: { anchor: string; reason: string }[];
+}
+
+/**
+ * Posts each proposed edit as a comment on the Google Doc so the owner can
+ * review and apply them manually. The Google Docs API does not support
+ * creating tracked-change suggestions programmatically, so comments are the
+ * safest non-destructive alternative.
+ *
+ * Each edit's `anchor` identifies the text to change and `replacement` is the
+ * proposed new text.
+ */
+export async function suggestEdits(
+  docId: string,
+  edits: SuggestEdit[]
+): Promise<SuggestEditsResult> {
+  if (!edits || edits.length === 0) return { applied: 0, skipped: [] };
+
+  const { drive } = getClients();
+  const skipped: { anchor: string; reason: string }[] = [];
+  let applied = 0;
+
+  for (const edit of edits) {
+    if (!edit.anchor || !edit.anchor.trim()) {
+      skipped.push({ anchor: edit.anchor, reason: "empty anchor" });
+      continue;
+    }
+
+    const body = [
+      `Suggested edit:`,
+      ``,
+      `Find: "${truncate(edit.anchor, 200)}"`,
+      ``,
+      `Replace with: "${truncate(edit.replacement, 500)}"`,
+    ].join("\n");
+
+    try {
+      await drive.comments.create({
+        fileId: docId,
+        fields: "id",
+        requestBody: { content: body },
+      });
+      applied++;
+    } catch (err: any) {
+      skipped.push({ anchor: edit.anchor, reason: err.message ?? "comment creation failed" });
+    }
+  }
+
+  return { applied, skipped };
+}
+
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max) + "…";
+}
+

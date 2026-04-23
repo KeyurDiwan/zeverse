@@ -57,6 +57,21 @@ function lookupPrdThread(channel: string, threadTs: string): PrdThreadContext | 
   return prdThreads.get(`${channel}:${threadTs}`);
 }
 
+/**
+ * Fallback lookup: find the most recently saved PRD thread for a channel.
+ * Needed because slash commands don't provide a `ts`, so the saved threadTs
+ * may not match the actual Slack thread parent ts.
+ */
+function lookupPrdThreadByChannel(channel: string): PrdThreadContext | undefined {
+  let best: PrdThreadContext | undefined;
+  for (const ctx of prdThreads.values()) {
+    if (ctx.channel !== channel) continue;
+    if (!best) { best = ctx; continue; }
+    if (ctx.threadTs > best.threadTs) best = ctx;
+  }
+  return best;
+}
+
 function lookupPrdThreadsByDocUrl(docUrl: string): PrdThreadContext[] {
   const keys = prdDocIndex.get(docUrl) ?? [];
   return keys.map((k) => prdThreads.get(k)).filter(Boolean) as PrdThreadContext[];
@@ -84,6 +99,77 @@ function loadAllPrdThreads(): void {
 }
 
 loadAllPrdThreads();
+
+// ─── Harness thread tracking ────────────────────────────────────────────────
+interface HarnessThreadContext {
+  channel: string;
+  threadTs: string;
+  repoId: string;
+  lastRunId: string;
+  lastWorkflow: string;
+  history: string[];
+}
+
+const harnessThreads = new Map<string, HarnessThreadContext>();
+
+function harnessThreadDir(repoId: string): string {
+  return path.join(HUB_STATE_DIR, repoId, "harness-threads");
+}
+
+function saveHarnessThread(ctx: HarnessThreadContext): void {
+  const key = `${ctx.channel}:${ctx.threadTs}`;
+  harnessThreads.set(key, ctx);
+
+  const dir = harnessThreadDir(ctx.repoId);
+  fs.mkdirSync(dir, { recursive: true });
+  const safe = ctx.threadTs.replace(/\./g, "_");
+  fs.writeFileSync(path.join(dir, `${safe}.json`), JSON.stringify(ctx, null, 2));
+}
+
+function lookupHarnessThread(channel: string, threadTs: string): HarnessThreadContext | undefined {
+  return harnessThreads.get(`${channel}:${threadTs}`);
+}
+
+function loadAllHarnessThreads(): void {
+  if (!fs.existsSync(HUB_STATE_DIR)) return;
+  for (const repoId of fs.readdirSync(HUB_STATE_DIR)) {
+    const dir = harnessThreadDir(repoId);
+    if (!fs.existsSync(dir)) continue;
+    for (const file of fs.readdirSync(dir)) {
+      if (!file.endsWith(".json")) continue;
+      try {
+        const ctx = JSON.parse(fs.readFileSync(path.join(dir, file), "utf-8")) as HarnessThreadContext;
+        harnessThreads.set(`${ctx.channel}:${ctx.threadTs}`, ctx);
+      } catch {
+        // skip corrupt files
+      }
+    }
+  }
+}
+
+loadAllHarnessThreads();
+
+// ─── Route-intent helper ────────────────────────────────────────────────────
+interface RouteIntentResult {
+  repoId: string | null;
+  workflow: string;
+  inputs: Record<string, string>;
+  confidence: number;
+  reason: string;
+  fallback: boolean;
+}
+
+async function routeIntent(prompt: string, repoId?: string): Promise<RouteIntentResult> {
+  const body: Record<string, string> = { prompt };
+  if (repoId) body.repoId = repoId;
+
+  const res = await fetch(`${ARCHON_SERVER_URL}/api/route-intent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return (await res.json()) as RouteIntentResult;
+}
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -130,6 +216,42 @@ async function listWorkflowNames(repoId: string): Promise<Set<string>> {
   }
 }
 
+async function inferRepoIdFromPrompt(prompt: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${ARCHON_SERVER_URL}/api/infer-repo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+    const data = (await res.json()) as { repoId: string | null; reason?: string };
+    return data.repoId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const WORKFLOW_KEYWORDS: [RegExp, string][] = [
+  [/\b(fix|bug|broken|crash|error)\b/i, "fix-bug"],
+  [/\b(review|pr\b|pull\s*request)\b/i, "pr-review"],
+  [/\blint\b/i, "lint-fix"],
+  [/\btest(?:s|ing)?\b/i, "test"],
+  [/\b(explain|understand|walk\s*me\s*through|how\s*does)\b/i, "explain-codebase"],
+  [/\b(upgrade|bump)\b/i, "upgrade-dep"],
+  [/\bupdate\b.*\b(dep|dependency|package)\b/i, "upgrade-dep"],
+  [/\bprd\b|docs\.google\.com\/document/i, "prd-analysis"],
+];
+
+function inferWorkflowFromPrompt(prompt: string, available: Set<string>): string {
+  for (const [pattern, workflow] of WORKFLOW_KEYWORDS) {
+    if (!pattern.test(prompt)) continue;
+    if (available.has(workflow)) return workflow;
+    if (workflow === "pr-review" && available.has("pr-review-remote")) return "pr-review-remote";
+  }
+  if (available.has(DEFAULT_WORKFLOW)) return DEFAULT_WORKFLOW;
+  const first = available.values().next().value;
+  return first ?? DEFAULT_WORKFLOW;
+}
+
 interface RunResponse {
   runId?: string;
   error?: string;
@@ -160,12 +282,18 @@ function stripMentions(text: string): string {
   return text.replace(/<@[A-Z0-9]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
+interface ParseOptions {
+  explicitWorkflow?: string;
+}
+
 // Parse "[repo-id] [workflow] <prompt>" (order-flexible between repo / workflow).
-// Falls back to ARCHON_DEFAULT_REPO_ID and ARCHON_DEFAULT_WORKFLOW when absent.
-async function parseInvocation(rawText: string): Promise<Invocation> {
+// When repo or workflow aren't provided as leading tokens, infers them:
+//   - repo: via LLM-based /api/infer-repo (or ARCHON_DEFAULT_REPO_ID env var)
+//   - workflow: via keyword matching against available workflows (or explicitWorkflow override)
+async function parseInvocation(rawText: string, opts: ParseOptions = {}): Promise<Invocation> {
   const text = stripMentions(rawText);
   if (!text) {
-    return { repoId: DEFAULT_REPO_ID || null, workflow: DEFAULT_WORKFLOW, prompt: "" };
+    return { repoId: DEFAULT_REPO_ID || null, workflow: opts.explicitWorkflow ?? DEFAULT_WORKFLOW, prompt: "" };
   }
 
   const tokens = text.split(/\s+/);
@@ -175,7 +303,6 @@ async function parseInvocation(rawText: string): Promise<Invocation> {
   let workflow: string | null = null;
   let i = 0;
 
-  // Up to two leading tokens may be repo-id and/or workflow, in any order.
   for (let step = 0; step < 2 && i < tokens.length; step += 1) {
     const tok = tokens[i];
     if (!repoId && repos.has(tok)) {
@@ -195,20 +322,154 @@ async function parseInvocation(rawText: string): Promise<Invocation> {
     break;
   }
 
+  const prompt = tokens.slice(i).join(" ").trim();
+
+  if (!repoId) {
+    repoId = DEFAULT_REPO_ID || null;
+  }
+  if (!repoId) {
+    repoId = await inferRepoIdFromPrompt(prompt || text);
+  }
+
+  if (opts.explicitWorkflow) {
+    workflow = opts.explicitWorkflow;
+  } else if (!workflow && repoId) {
+    const available = await listWorkflowNames(repoId);
+    workflow = inferWorkflowFromPrompt(prompt || text, available);
+  }
+
   return {
-    repoId: repoId ?? (DEFAULT_REPO_ID || null),
+    repoId,
     workflow: workflow ?? DEFAULT_WORKFLOW,
-    prompt: tokens.slice(i).join(" ").trim(),
+    prompt,
   };
 }
 
 function usageText(prefix: string): string {
   return [
     `*Usage*: ${prefix} [<repo-id>] [<workflow>] <your requirement>`,
-    `• <repo-id> — optional; defaults to \`ARCHON_DEFAULT_REPO_ID\``,
-    `• <workflow> — optional; defaults to \`${DEFAULT_WORKFLOW}\``,
+    `• <repo-id> — optional; auto-inferred from your prompt`,
+    `• <workflow> — optional; inferred via keywords (fallback: \`${DEFAULT_WORKFLOW}\`)`,
     `• Example: \`${prefix} ubx-ui pr-review fix flaky login test\``,
   ].join("\n");
+}
+
+async function noRepoErrorText(prefix: string): Promise<string> {
+  const repos = await listRepoIds();
+  const repoList = repos.size > 0
+    ? `Available repos: ${[...repos].map((r) => `\`${r}\``).join(", ")}`
+    : "No repos are currently registered.";
+  return (
+    `Could not determine which repo to use from your prompt.\n` +
+    `${repoList}\n` +
+    `Try: \`${prefix} <repo-id> <requirement>\``
+  );
+}
+
+interface RunState {
+  runId: string;
+  repoId: string;
+  status: string;
+  steps: { id: string; status: string; output: string; error?: string }[];
+}
+
+const SLACK_MAX_TEXT = 3900;
+
+function trimOutput(text: string): string {
+  if (text.length <= SLACK_MAX_TEXT) return text;
+  return text.slice(0, SLACK_MAX_TEXT) + "\n…_(truncated — see full output in Archon Hub)_";
+}
+
+async function pollRunAndPostResult(
+  runId: string,
+  repoId: string,
+  channel: string,
+  thread_ts: string,
+  client: any,
+  logger: any
+): Promise<void> {
+  const maxAttempts = 200;
+  const intervalMs = 3000;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+
+    let state: RunState;
+    try {
+      const res = await fetch(
+        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
+      );
+      state = (await res.json()) as RunState;
+    } catch {
+      continue;
+    }
+
+    if (state.status !== "success" && state.status !== "failed") continue;
+
+    if (state.status === "failed") {
+      const failedStep = state.steps.find((s) => s.status === "failed");
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text:
+          `*Workflow failed*\n` +
+          `Step: \`${failedStep?.id ?? "?"}\`\n` +
+          `Error: ${failedStep?.error ?? "unknown"}\n` +
+          `<${ARCHON_UI_URL}/?run=${runId}|View run details>`,
+      });
+      return;
+    }
+
+    const parts: string[] = [`*Workflow complete*`, ""];
+
+    const diffStep = state.steps.find((s) => s.id === "diff-after");
+    if (diffStep?.output) {
+      const diffLines = diffStep.output.split("\n");
+      const statLine = diffLines.find((l) => l.includes("files changed") || l.includes("file changed"));
+      if (statLine) parts.push(`\`${statLine.trim()}\``);
+      const diffPreview = diffLines
+        .filter((l) => l.startsWith("+") || l.startsWith("-"))
+        .slice(0, 20)
+        .join("\n");
+      if (diffPreview) parts.push("```" + diffPreview + "```");
+    }
+
+    const prStep = state.steps.find((s) => s.id === "open-pr");
+    if (prStep?.output) {
+      const prUrlMatch = prStep.output.match(/PR_URL=(https?:\/\/\S+)/);
+      if (prUrlMatch) parts.push(`<${prUrlMatch[1]}|View PR on GitHub>`);
+    }
+
+    const reviewStep = state.steps.find((s) => s.id === "review");
+    if (reviewStep?.output) {
+      const verdictMatch = reviewStep.output.match(/(?:verdict|recommendation)[:\s]*(.*)/i);
+      if (verdictMatch) parts.push(`*Review verdict:* ${verdictMatch[1].trim().slice(0, 200)}`);
+    }
+
+    const lastStep = state.steps[state.steps.length - 1];
+    const lastOutput = lastStep?.output ?? "";
+    if (!diffStep?.output && !prStep?.output && !reviewStep?.output) {
+      parts.push(trimOutput(lastOutput));
+    }
+
+    parts.push("");
+    parts.push(`<${ARCHON_UI_URL}/?run=${runId}|View full output in Archon Hub>`);
+
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: parts.filter(Boolean).join("\n"),
+    });
+    return;
+  }
+
+  await client.chat.postMessage({
+    channel,
+    thread_ts,
+    text:
+      `*Workflow timed out* — the run is still going.\n` +
+      `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
+  });
 }
 
 function successBlocks(inv: Invocation & { runId: string }) {
@@ -231,12 +492,10 @@ function successBlocks(inv: Invocation & { runId: string }) {
 }
 
 function registerCommand(commandName: string, workflowName: string) {
-  app.command(commandName, async ({ command, ack, respond }) => {
+  app.command(commandName, async ({ command, ack, respond, client, logger }) => {
     await ack();
 
-    const inv = await parseInvocation(command.text ?? "");
-    // Slash command's workflow is fixed by the command name itself.
-    inv.workflow = workflowName;
+    const inv = await parseInvocation(command.text ?? "", { explicitWorkflow: workflowName });
 
     if (!inv.prompt) {
       await respond({ response_type: "ephemeral", text: usageText(commandName) });
@@ -245,9 +504,7 @@ function registerCommand(commandName: string, workflowName: string) {
     if (!inv.repoId) {
       await respond({
         response_type: "ephemeral",
-        text:
-          `No repo specified and \`ARCHON_DEFAULT_REPO_ID\` is not set. ` +
-          `Use: \`${commandName} <repo-id> <requirement>\``,
+        text: await noRepoErrorText(commandName),
       });
       return;
     }
@@ -261,10 +518,16 @@ function registerCommand(commandName: string, workflowName: string) {
         });
         return;
       }
+      const runId = result.runId ?? "";
       await respond({
         response_type: "in_channel",
-        blocks: successBlocks({ ...inv, runId: result.runId ?? "" }),
+        blocks: successBlocks({ ...inv, runId }),
       });
+
+      const thread_ts = command.ts ?? "";
+      pollRunAndPostResult(runId, inv.repoId, command.channel_id, thread_ts, client, logger).catch(
+        (err) => logger.error("pollRunAndPostResult error:", err)
+      );
     } catch (err: any) {
       await respond({
         response_type: "ephemeral",
@@ -275,20 +538,116 @@ function registerCommand(commandName: string, workflowName: string) {
 }
 
 registerCommand("/archon-dev", "dev");
-registerCommand("/archon-harness", "harness");
+// ─── /archon-harness (smart router) ─────────────────────────────────────────
+app.command("/archon-harness", async ({ command, ack, respond, client, logger }) => {
+  await ack();
+
+  const rawText = command.text ?? "";
+  const parsed = await parseInvocation(rawText);
+  const prompt = parsed.prompt || rawText.trim();
+
+  if (!prompt) {
+    await respond({
+      response_type: "ephemeral",
+      text: [
+        `*Usage*: \`/archon-harness <anything>\``,
+        `Ask a question, describe a bug, request a feature, ask for a review — the router picks the right workflow.`,
+        `Example: \`/archon-harness fix the login redirect loop\``,
+        `Example: \`/archon-harness how does the billing page work?\``,
+      ].join("\n"),
+    });
+    return;
+  }
+
+  const repoId = parsed.repoId || DEFAULT_REPO_ID || null;
+
+  await respond({
+    response_type: "ephemeral",
+    text: `_Thinking... routing your request to the best workflow._`,
+  });
+
+  try {
+    const route = await routeIntent(prompt, repoId ?? undefined);
+
+    if (!route.repoId) {
+      await respond({
+        response_type: "ephemeral",
+        text: await noRepoErrorText("/archon-harness"),
+      });
+      return;
+    }
+
+    const result = await triggerWorkflow(
+      route.repoId,
+      route.workflow,
+      prompt,
+      route.inputs
+    );
+
+    if (result.error) {
+      await respond({
+        response_type: "ephemeral",
+        text: `Failed to start workflow: ${result.error}`,
+      });
+      return;
+    }
+
+    const runId = result.runId ?? "";
+    const fallbackNote = route.fallback ? " _(fallback)_" : "";
+
+    await respond({
+      response_type: "in_channel",
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: [
+              `*Archon harness started*`,
+              `Routed to: \`${route.workflow}\`${fallbackNote}`,
+              `Reason: ${route.reason}`,
+              `Repo: \`${route.repoId}\` | Confidence: ${(route.confidence * 100).toFixed(0)}%`,
+              `Prompt: ${prompt}`,
+              `Run ID: \`${runId}\``,
+              `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
+            ].join("\n"),
+          },
+        },
+      ],
+    });
+
+    const thread_ts = command.ts ?? "";
+
+    saveHarnessThread({
+      channel: command.channel_id,
+      threadTs: thread_ts,
+      repoId: route.repoId,
+      lastRunId: runId,
+      lastWorkflow: route.workflow,
+      history: [prompt],
+    });
+
+    pollRunAndPostResult(
+      runId,
+      route.repoId,
+      command.channel_id,
+      thread_ts,
+      client,
+      logger
+    ).catch((err) => logger.error("pollRunAndPostResult error:", err));
+  } catch (err: any) {
+    await respond({
+      response_type: "ephemeral",
+      text: `Error connecting to Archon server: ${err.message}`,
+    });
+  }
+});
 
 // ─── /archon-prd (PRD analysis) ────────────────────────────────────────────
 
 function isGoogleDocUrl(text: string): boolean {
   return /docs\.google\.com\/document\/d\//.test(text) ||
     /drive\.google\.com\/.*\/d\//.test(text);
-}
-
-interface RunState {
-  runId: string;
-  repoId: string;
-  status: string;
-  steps: { id: string; status: string; output: string; error?: string }[];
 }
 
 function extractSlackReply(text: string): string | null {
@@ -334,6 +693,141 @@ function extractDocId(urlOrId: string): string {
   if (m) return m[1];
   if (/^[a-zA-Z0-9_-]{20,}$/.test(trimmed)) return trimmed;
   return trimmed;
+}
+
+// ─── PRD context discovery ──────────────────────────────────────────────────
+// When no saved PRD thread context exists (e.g. because the slash command
+// didn't save one properly), discover it by scanning the thread for an
+// Archon Hub run URL and reconstructing the context from the run state.
+
+/**
+ * Scans local run state files to find the most recent successful prd-analysis
+ * run and reconstructs a PrdThreadContext from it. This avoids needing Slack
+ * API scopes just for discovery.
+ */
+function discoverPrdContextFromState(
+  channel: string,
+  threadTs: string,
+  logger: any
+): PrdThreadContext | undefined {
+  if (!fs.existsSync(HUB_STATE_DIR)) return undefined;
+
+  let bestRun: { repoId: string; data: any; mtime: number } | undefined;
+
+  for (const repoId of fs.readdirSync(HUB_STATE_DIR)) {
+    const runsDir = path.join(HUB_STATE_DIR, repoId, "runs");
+    if (!fs.existsSync(runsDir)) continue;
+
+    for (const file of fs.readdirSync(runsDir)) {
+      if (!file.endsWith(".json")) continue;
+      try {
+        const filePath = path.join(runsDir, file);
+        const stat = fs.statSync(filePath);
+        const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+        if (data.workflow !== "prd-analysis" || data.status !== "success") continue;
+        if (!bestRun || stat.mtimeMs > bestRun.mtime) {
+          bestRun = { repoId, data, mtime: stat.mtimeMs };
+        }
+      } catch {
+        // skip corrupt files
+      }
+    }
+  }
+
+  if (!bestRun) {
+    logger.info("discoverPrdContextFromState: no successful prd-analysis runs found");
+    return undefined;
+  }
+
+  const state = bestRun.data;
+  const repoId = bestRun.repoId;
+
+  // Extract doc URL from the prompt
+  let docUrl = "";
+  const promptMatch = (state.prompt ?? "").match(
+    /(https?:\/\/docs\.google\.com\/document\/d\/[^\s]+)/
+  );
+  if (promptMatch) docUrl = promptMatch[1];
+  if (!docUrl) return undefined;
+
+  const analyseStep = (state.steps ?? []).find((s: any) => s.id === "analyse");
+  const postQueriesStep = (state.steps ?? []).find((s: any) => s.id === "post-queries");
+
+  const analyseOutput = analyseStep?.output ?? "";
+  const commentSummary = postQueriesStep?.output ?? "";
+
+  const queries = extractQueriesJson(analyseOutput);
+  const commentIds = parsePostedCommentIds(commentSummary);
+
+  const trackedQueries: PrdQueryInfo[] = queries.map((q, idx) => ({
+    index: idx + 1,
+    body: q.body,
+    commentId: commentIds.get(idx + 1) ?? "",
+  }));
+
+  const ctx: PrdThreadContext = {
+    channel,
+    threadTs: threadTs,
+    repoId,
+    docUrl,
+    docId: extractDocId(docUrl),
+    runId: state.runId ?? "",
+    queries: trackedQueries,
+  };
+
+  savePrdThread(ctx);
+  logger.info(
+    `discoverPrdContextFromState: reconstructed from run ${ctx.runId} ` +
+    `(${trackedQueries.length} queries, doc=${ctx.docId})`
+  );
+
+  return ctx;
+}
+
+// ─── Shared thread-context builder ──────────────────────────────────────────
+// Formats Slack thread messages into a structured text block that can be
+// passed to workflows as the `threadContext` input.
+
+function buildThreadContext(
+  messages: any[],
+  queries: PrdQueryInfo[]
+): string {
+  const humanReplies = messages.slice(1).filter(
+    (msg: any) => !msg.bot_id && !msg.subtype
+  );
+  if (humanReplies.length === 0) return "";
+
+  const lines: string[] = ["--- PRIOR SLACK DISCUSSION ---"];
+  for (const q of queries) {
+    lines.push(`Q${q.index}: ${q.body}`);
+    const answers = humanReplies.filter((msg: any) => {
+      const t = (msg.text ?? "").trim();
+      const prefix = t.match(/^(?:Q|#)\s*(\d+)\b/i);
+      return prefix && parseInt(prefix[1], 10) === q.index;
+    });
+    if (answers.length > 0) {
+      for (const a of answers) {
+        const user = a.user ?? "unknown";
+        const ansText = (a.text ?? "").replace(/^(?:Q|#)\s*\d+[:\s]*/i, "").trim();
+        lines.push(`  A (user: ${user}): ${ansText}`);
+      }
+    } else {
+      lines.push("  (no answers yet)");
+    }
+  }
+  const unmatchedReplies = humanReplies.filter((msg: any) => {
+    const t = (msg.text ?? "").trim();
+    return !t.match(/^(?:Q|#)\s*\d+\b/i);
+  });
+  if (unmatchedReplies.length > 0) {
+    lines.push("");
+    lines.push("General discussion:");
+    for (const a of unmatchedReplies) {
+      lines.push(`  (user: ${a.user ?? "unknown"}): ${(a.text ?? "").trim()}`);
+    }
+  }
+  lines.push("--- END PRIOR SLACK DISCUSSION ---");
+  return lines.join("\n");
 }
 
 async function pollRunAndReply(
@@ -479,9 +973,7 @@ app.command("/archon-prd", async ({ command, ack, respond, client, logger }) => 
   if (!inv.repoId) {
     await respond({
       response_type: "ephemeral",
-      text:
-        `No repo specified and \`ARCHON_DEFAULT_REPO_ID\` is not set. ` +
-        `Use: \`/archon-prd <repo-id> <google-doc-url>\``,
+      text: await noRepoErrorText("/archon-prd"),
     });
     return;
   }
@@ -499,45 +991,7 @@ app.command("/archon-prd", async ({ command, ack, respond, client, logger }) => 
           limit: 200,
         });
         const messages = (threadRes.messages ?? []) as any[];
-        // Skip the first message (the bot's initial post) and bot messages
-        const humanReplies = messages.slice(1).filter(
-          (msg: any) => !msg.bot_id && !msg.subtype
-        );
-
-        if (humanReplies.length > 0) {
-          const lines: string[] = ["--- PRIOR SLACK DISCUSSION ---"];
-          for (const q of latest.queries) {
-            lines.push(`Q${q.index}: ${q.body}`);
-            const answers = humanReplies.filter((msg: any) => {
-              const t = (msg.text ?? "").trim();
-              const prefix = t.match(/^(?:Q|#)\s*(\d+)\b/i);
-              return prefix && parseInt(prefix[1], 10) === q.index;
-            });
-            if (answers.length > 0) {
-              for (const a of answers) {
-                const user = a.user ?? "unknown";
-                const ansText = (a.text ?? "").replace(/^(?:Q|#)\s*\d+[:\s]*/i, "").trim();
-                lines.push(`  A (user: ${user}): ${ansText}`);
-              }
-            } else {
-              lines.push("  (no answers yet)");
-            }
-          }
-          // Also include unmatched replies as general context
-          const unmatchedReplies = humanReplies.filter((msg: any) => {
-            const t = (msg.text ?? "").trim();
-            return !t.match(/^(?:Q|#)\s*\d+\b/i);
-          });
-          if (unmatchedReplies.length > 0) {
-            lines.push("");
-            lines.push("General discussion:");
-            for (const a of unmatchedReplies) {
-              lines.push(`  (user: ${a.user ?? "unknown"}): ${(a.text ?? "").trim()}`);
-            }
-          }
-          lines.push("--- END PRIOR SLACK DISCUSSION ---");
-          threadContext = lines.join("\n");
-        }
+        threadContext = buildThreadContext(messages, latest.queries);
       } catch (err: any) {
         logger.error(`Failed to collect thread history: ${err.message}`);
       }
@@ -595,17 +1049,407 @@ app.command("/archon-prd", async ({ command, ack, respond, client, logger }) => 
   }
 });
 
+// ─── PRD thread @mention handling ───────────────────────────────────────────
+// When the bot is @mentioned inside a tracked PRD thread with an "update" or
+// "answer" intent, read the thread history and sync back to the Google Doc.
+
+type PrdMentionIntent = "update" | "answer";
+
+const UPDATE_RE = /^(update|edit|apply|update\s+(the\s+)?(prd|doc|prd\s+doc))$/i;
+const ANSWER_RE = /^(answer|answer\s+this|reply|respond|post\s+answers|ans\s+this)$/i;
+
+function parsePrdMentionIntent(stripped: string): PrdMentionIntent | null {
+  if (UPDATE_RE.test(stripped)) return "update";
+  if (ANSWER_RE.test(stripped)) return "answer";
+  return null;
+}
+
+function extractAnswersJson(text: string): { queryIndex: number; commentId: string; body: string }[] {
+  const re = /```(?:json)?\s*answers?\s*\n([\s\S]*?)```/i;
+  const m = text.match(re);
+  if (!m) return [];
+  try {
+    const parsed = JSON.parse(m[1]);
+    return Array.isArray(parsed) ? parsed.filter((e: any) => e.queryIndex && e.body) : [];
+  } catch {
+    return [];
+  }
+}
+
+function extractSummaryBlock(text: string): string | null {
+  const m = text.match(/---\s*SUMMARY\s*---\s*\n([\s\S]*?)\n---\s*END SUMMARY\s*---/);
+  return m ? m[1].trim() : null;
+}
+
+function extractEditsJson(text: string): { anchor: string; replacement: string; reason: string }[] {
+  const re = /```(?:json)?\s*edits?\s*\n([\s\S]*?)```/i;
+  const m = text.match(re);
+  if (!m) return [];
+  try {
+    const parsed = JSON.parse(m[1]);
+    return Array.isArray(parsed) ? parsed.filter((e: any) => e.anchor && e.replacement) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function postGDocComment(
+  docId: string,
+  body: string
+): Promise<{ commentId?: string; error?: string }> {
+  try {
+    const res = await fetch(`${ARCHON_SERVER_URL}/api/gdoc-comment`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ docId, body }),
+    });
+    return (await res.json()) as { commentId?: string; error?: string };
+  } catch (err: any) {
+    return { error: err.message };
+  }
+}
+
+async function postGDocSuggestEdits(
+  docId: string,
+  edits: { anchor: string; replacement: string }[]
+): Promise<{ applied?: number; skipped?: { anchor: string; reason: string }[]; error?: string }> {
+  try {
+    const res = await fetch(`${ARCHON_SERVER_URL}/api/gdoc-suggest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ docId, edits }),
+    });
+    return (await res.json()) as any;
+  } catch (err: any) {
+    return { error: err.message };
+  }
+}
+
+async function handlePrdThreadMention(
+  ctx: PrdThreadContext,
+  intent: PrdMentionIntent,
+  channel: string,
+  thread_ts: string,
+  client: any,
+  logger: any
+): Promise<void> {
+  await client.chat.postMessage({
+    channel,
+    thread_ts,
+    text:
+      `*PRD ${intent === "update" ? "update" : "answer sync"} started*\n` +
+      `Reading thread history and syncing to <${ctx.docUrl}|Google Doc>...\n` +
+      `_I'll reply here when done._`,
+  });
+
+  let threadContext = "";
+  try {
+    const threadRes = await client.conversations.replies({
+      channel,
+      ts: thread_ts,
+      limit: 200,
+    });
+    const messages = (threadRes.messages ?? []) as any[];
+    threadContext = buildThreadContext(messages, ctx.queries);
+  } catch (err: any) {
+    logger.error(`Failed to collect thread history: ${err.message}`);
+    const scopeHint = err.message?.includes("missing_scope")
+      ? `\n_The Slack app is missing the \`groups:history\` scope. ` +
+        `Add it in your Slack app settings under OAuth & Permissions._`
+      : "";
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: `Failed to read thread history: ${err.message}${scopeHint}`,
+    });
+    return;
+  }
+
+  if (!threadContext) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: `No discussion found in this thread to sync.`,
+    });
+    return;
+  }
+
+  let result: RunResponse;
+  try {
+    result = await triggerWorkflow(ctx.repoId, "prd-thread-sync", `PRD thread sync (${intent})`, {
+      docUrl: ctx.docUrl,
+      intent,
+      threadContext,
+      queries: JSON.stringify(ctx.queries),
+    });
+  } catch (err: any) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: `Error connecting to Archon server: ${err.message}`,
+    });
+    return;
+  }
+
+  if (result.error) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: `Failed to start PRD thread sync: ${result.error}`,
+    });
+    return;
+  }
+
+  const runId = result.runId ?? "";
+
+  pollThreadSync(runId, ctx, intent, channel, thread_ts, client, logger).catch((err) =>
+    logger.error("pollThreadSync error:", err)
+  );
+}
+
+async function pollThreadSync(
+  runId: string,
+  ctx: PrdThreadContext,
+  intent: PrdMentionIntent,
+  channel: string,
+  thread_ts: string,
+  client: any,
+  logger: any
+): Promise<void> {
+  const maxAttempts = 200;
+  const intervalMs = 3000;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+
+    let state: RunState;
+    try {
+      const res = await fetch(
+        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(ctx.repoId)}`
+      );
+      state = (await res.json()) as RunState;
+    } catch {
+      continue;
+    }
+
+    if (state.status !== "success" && state.status !== "failed") continue;
+
+    if (state.status === "failed") {
+      const failedStep = state.steps.find((s) => s.status === "failed");
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text:
+          `*PRD thread sync failed*\n` +
+          `Step: \`${failedStep?.id ?? "?"}\`\n` +
+          `Error: ${failedStep?.error ?? "unknown"}\n` +
+          `<${ARCHON_UI_URL}/?run=${runId}|View run details>`,
+      });
+      return;
+    }
+
+    const synthesizeStep = state.steps.find((s) => s.id === "synthesize");
+    const output = synthesizeStep?.output ?? "";
+
+    const answers = extractAnswersJson(output);
+    const summary = extractSummaryBlock(output);
+    const edits = intent === "update" ? extractEditsJson(output) : [];
+
+    let repliesPosted = 0;
+    let repliesFailed = 0;
+    for (const ans of answers) {
+      if (!ans.commentId) continue;
+      const r = await postGDocReply(ctx.docId, ans.commentId, ans.body);
+      if (r.error) {
+        repliesFailed++;
+        logger.error(`GDoc reply failed for Q${ans.queryIndex}: ${r.error}`);
+      } else {
+        repliesPosted++;
+      }
+    }
+
+    let summaryPosted = false;
+    if (summary) {
+      const r = await postGDocComment(ctx.docId, summary);
+      if (r.error) {
+        logger.error(`GDoc summary comment failed: ${r.error}`);
+      } else {
+        summaryPosted = true;
+      }
+    }
+
+    let editsApplied = 0;
+    let editsSkipped = 0;
+    if (edits.length > 0) {
+      const r = await postGDocSuggestEdits(ctx.docId, edits);
+      if (r.error) {
+        logger.error(`GDoc suggest edits failed: ${r.error}`);
+      } else {
+        editsApplied = r.applied ?? 0;
+        editsSkipped = (r.skipped ?? []).length;
+      }
+    }
+
+    const parts: string[] = [`*PRD ${intent === "update" ? "update" : "answer sync"} complete*`, ""];
+    if (repliesPosted > 0) parts.push(`Replies posted on Google Doc comments: ${repliesPosted}`);
+    if (repliesFailed > 0) parts.push(`Reply failures: ${repliesFailed}`);
+    if (summaryPosted) parts.push(`Summary comment added to Google Doc`);
+    if (intent === "update" && edits.length > 0) {
+      parts.push(`Suggestions created: ${editsApplied}, skipped: ${editsSkipped}`);
+    }
+    parts.push("");
+    parts.push(`<${ctx.docUrl}|Open PRD in Google Docs>`);
+    parts.push(`<${ARCHON_UI_URL}/?run=${runId}|View full run in Archon Hub>`);
+
+    await client.chat.postMessage({ channel, thread_ts, text: parts.join("\n") });
+    return;
+  }
+
+  await client.chat.postMessage({
+    channel,
+    thread_ts,
+    text:
+      `*PRD thread sync timed out* — the run is still going.\n` +
+      `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
+  });
+}
+
+// ─── Harness thread follow-up ───────────────────────────────────────────────
+async function handleHarnessFollowUp(
+  ctx: HarnessThreadContext,
+  newPrompt: string,
+  channel: string,
+  thread_ts: string,
+  client: any,
+  logger: any
+): Promise<void> {
+  await client.chat.postMessage({
+    channel,
+    thread_ts,
+    text: `_Routing follow-up..._`,
+  });
+
+  let threadContext = "";
+  try {
+    const threadRes = await client.conversations.replies({
+      channel,
+      ts: thread_ts,
+      limit: 200,
+    });
+    const messages = (threadRes.messages ?? []) as any[];
+    const humanReplies = messages.filter(
+      (msg: any) => !msg.bot_id && !msg.subtype
+    );
+    if (humanReplies.length > 0) {
+      const lines: string[] = ["--- PRIOR THREAD DISCUSSION ---"];
+      for (const msg of messages) {
+        const who = msg.bot_id ? "bot" : `user:${msg.user ?? "unknown"}`;
+        lines.push(`[${who}] ${(msg.text ?? "").trim()}`);
+      }
+      lines.push("--- END PRIOR THREAD DISCUSSION ---");
+      threadContext = lines.join("\n");
+    }
+  } catch (err: any) {
+    logger.error(`Failed to collect harness thread history: ${err.message}`);
+  }
+
+  const fullPrompt = threadContext
+    ? `${threadContext}\n\nNew follow-up request:\n${newPrompt}`
+    : newPrompt;
+
+  try {
+    const route = await routeIntent(fullPrompt, ctx.repoId);
+    const repoId = route.repoId ?? ctx.repoId;
+
+    const result = await triggerWorkflow(
+      repoId,
+      route.workflow,
+      fullPrompt,
+      route.inputs
+    );
+
+    if (result.error) {
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `Failed to start follow-up workflow: ${result.error}`,
+      });
+      return;
+    }
+
+    const runId = result.runId ?? "";
+    const fallbackNote = route.fallback ? " _(fallback)_" : "";
+
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: [
+        `*Follow-up routed to \`${route.workflow}\`*${fallbackNote}`,
+        `Reason: ${route.reason}`,
+        `Run ID: \`${runId}\``,
+        `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
+      ].join("\n"),
+    });
+
+    ctx.lastRunId = runId;
+    ctx.lastWorkflow = route.workflow;
+    ctx.history.push(newPrompt);
+    saveHarnessThread(ctx);
+
+    pollRunAndPostResult(runId, repoId, channel, thread_ts, client, logger).catch(
+      (err) => logger.error("pollRunAndPostResult (harness follow-up) error:", err)
+    );
+  } catch (err: any) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: `Error connecting to Archon server: ${err.message}`,
+    });
+  }
+}
+
 // ─── @mentions ─────────────────────────────────────────────────────────────
 // Tag the bot in any channel it's been invited to:
 //   @ArchonBot ubx-ui pr-review fix flaky login test
 //   @ArchonBot fix the readme typo          (uses defaults)
 //   @ArchonBot help
+//   @ArchonBot update the PRD doc   (inside a tracked PRD thread)
+//   @ArchonBot answer this          (inside a tracked PRD thread)
 app.event("app_mention", async ({ event, client, logger }) => {
   const text = (event as any).text ?? "";
   const channel = (event as any).channel as string;
   const thread_ts = (event as any).thread_ts ?? (event as any).ts;
 
   const stripped = stripMentions(text);
+
+  // Check if this mention is inside a tracked PRD thread
+  if (thread_ts) {
+    const intent = parsePrdMentionIntent(stripped);
+    if (intent) {
+      const prdCtx =
+        lookupPrdThread(channel, thread_ts) ??
+        lookupPrdThreadByChannel(channel) ??
+        discoverPrdContextFromState(channel, thread_ts, logger);
+      if (prdCtx) {
+        handlePrdThreadMention(prdCtx, intent, channel, thread_ts, client, logger).catch(
+          (err) => logger.error("handlePrdThreadMention error:", err)
+        );
+        return;
+      }
+    }
+  }
+
+  // Check if this mention is inside a tracked harness thread — route follow-up
+  if (thread_ts && stripped) {
+    const harnessCtx = lookupHarnessThread(channel, thread_ts);
+    if (harnessCtx) {
+      handleHarnessFollowUp(harnessCtx, stripped, channel, thread_ts, client, logger).catch(
+        (err) => logger.error("handleHarnessFollowUp error:", err)
+      );
+      return;
+    }
+  }
+
   if (!stripped || /^(help|\?|usage)$/i.test(stripped)) {
     await client.chat.postMessage({
       channel,
@@ -629,9 +1473,7 @@ app.event("app_mention", async ({ event, client, logger }) => {
     await client.chat.postMessage({
       channel,
       thread_ts,
-      text:
-        `No repo specified and \`ARCHON_DEFAULT_REPO_ID\` is not set. ` +
-        `Try: \`@ArchonBot <repo-id> <requirement>\``,
+      text: await noRepoErrorText("@ArchonBot"),
     });
     return;
   }
@@ -646,12 +1488,17 @@ app.event("app_mention", async ({ event, client, logger }) => {
       });
       return;
     }
+    const runId = result.runId ?? "";
     await client.chat.postMessage({
       channel,
       thread_ts,
-      blocks: successBlocks({ ...inv, runId: result.runId ?? "" }),
-      text: `Archon run ${result.runId} started for ${inv.repoId}/${inv.workflow}`,
+      blocks: successBlocks({ ...inv, runId }),
+      text: `Archon run ${runId} started for ${inv.repoId}/${inv.workflow}`,
     });
+
+    pollRunAndPostResult(runId, inv.repoId, channel, thread_ts, client, logger).catch(
+      (err) => logger.error("pollRunAndPostResult error:", err)
+    );
   } catch (err: any) {
     logger.error(err);
     await client.chat.postMessage({
@@ -776,7 +1623,7 @@ app.message(async ({ message, client, logger }) => {
   if (m.subtype || m.bot_id) return;
   if (!m.thread_ts) return;
 
-  const ctx = lookupPrdThread(m.channel, m.thread_ts);
+  const ctx = lookupPrdThread(m.channel, m.thread_ts) ?? lookupPrdThreadByChannel(m.channel);
   if (!ctx) return;
 
   const text = (m.text ?? "").trim();
@@ -843,9 +1690,7 @@ app.message(async ({ message, client, logger }) => {
   if (!inv.repoId) {
     await client.chat.postMessage({
       channel: m.channel,
-      text:
-        `No repo specified and \`ARCHON_DEFAULT_REPO_ID\` is not set. ` +
-        `Try: \`<repo-id> <requirement>\``,
+      text: await noRepoErrorText("(DM)"),
     });
     return;
   }
@@ -859,11 +1704,16 @@ app.message(async ({ message, client, logger }) => {
       });
       return;
     }
+    const runId = result.runId ?? "";
     await client.chat.postMessage({
       channel: m.channel,
-      blocks: successBlocks({ ...inv, runId: result.runId ?? "" }),
-      text: `Archon run ${result.runId} started for ${inv.repoId}/${inv.workflow}`,
+      blocks: successBlocks({ ...inv, runId }),
+      text: `Archon run ${runId} started for ${inv.repoId}/${inv.workflow}`,
     });
+
+    pollRunAndPostResult(runId, inv.repoId, m.channel, m.ts, client, logger).catch(
+      (err) => logger.error("pollRunAndPostResult error:", err)
+    );
   } catch (err: any) {
     logger.error(err);
     await client.chat.postMessage({

@@ -8,6 +8,8 @@ import cors from "cors";
 import { workflowRoutes } from "./routes/workflows";
 import { runRoutes } from "./routes/runs";
 import { repoRoutes } from "./routes/repos";
+import { inferRoutes } from "./routes/infer";
+import { routeIntentRoutes } from "./routes/route-intent";
 
 const app = express();
 const PORT = parseInt(process.env.ARCHON_SERVER_PORT ?? "3100", 10);
@@ -18,6 +20,8 @@ app.use(express.json({ limit: "2mb" }));
 app.use("/api", repoRoutes);
 app.use("/api", workflowRoutes);
 app.use("/api", runRoutes);
+app.use("/api", inferRoutes);
+app.use("/api", routeIntentRoutes);
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });

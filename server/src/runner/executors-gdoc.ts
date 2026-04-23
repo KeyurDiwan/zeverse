@@ -145,7 +145,7 @@ export async function executeGDocCommentStep(
   const lines = results.map(
     (r) => {
       if (r.commentId === "dup-skipped") return `SKIP [${r.index + 1}] ${r.body.slice(0, 80)} (already exists)`;
-      if (r.status === "ok") return `+ [${r.index + 1}] ${r.body.slice(0, 80)}`;
+      if (r.status === "ok") return `+ [${r.index + 1}] ${r.body.slice(0, 80)} (id=${r.commentId})`;
       return `FAIL [${r.index + 1}] ${r.body.slice(0, 80)} — ${r.error}`;
     }
   );
