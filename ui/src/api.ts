@@ -87,12 +87,13 @@ export async function fetchWorkflows(repoId: string): Promise<WorkflowSummary[]>
 export async function triggerRun(
   repoId: string,
   workflow: string,
-  prompt: string
+  prompt: string,
+  inputs?: Record<string, string>
 ): Promise<string> {
   const res = await fetch(`${BASE}/run-workflow`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repoId, workflow, prompt }),
+    body: JSON.stringify({ repoId, workflow, prompt, inputs }),
   });
   const data = await json<{ runId: string }>(res);
   return data.runId;

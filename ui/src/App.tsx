@@ -23,6 +23,19 @@ const STATUS_COLORS: Record<RunStatus, string> = {
 const SELECTED_REPO_KEY = "archon-hub:selected-repo";
 const SELECTED_WORKFLOW_KEY = "archon-hub:selected-workflow";
 
+// Input ids that should render as multi-line textareas rather than single-line inputs.
+const LONG_INPUT_IDS = new Set([
+  "requirement",
+  "bug",
+  "question",
+  "description",
+  "prompt",
+  "hint",
+  "notes",
+  "context",
+  "focus",
+]);
+
 function StatusChip({ status }: { status: RunStatus }) {
   return (
     <span
@@ -50,7 +63,7 @@ export default function App() {
   );
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null);
-  const [prompt, setPrompt] = useState("");
+  const [inputValues, setInputValues] = useState<Record<string, string>>({});
   const [runId, setRunId] = useState<string | null>(null);
   const [run, setRun] = useState<RunState | null>(null);
   const [logs, setLogs] = useState("");
@@ -121,22 +134,65 @@ export default function App() {
     }
   }, [selectedRepoId, selectedWorkflow]);
 
+  useEffect(() => {
+    setInputValues({});
+  }, [selectedWorkflow]);
+
+  const selectedWorkflowMeta = workflows.find((w) => w.name === selectedWorkflow) ?? null;
+  const declaredInputs = selectedWorkflowMeta?.inputs ?? [];
+  const missingRequired = declaredInputs
+    .filter((i) => i.required)
+    .some((i) => !(inputValues[i.id] ?? "").trim());
+  const hasAnyInputValue = declaredInputs.some(
+    (i) => (inputValues[i.id] ?? "").trim().length > 0
+  );
+  const canRun =
+    !!selectedRepoId &&
+    !!selectedWorkflow &&
+    !submitting &&
+    (declaredInputs.length === 0 ? false : !missingRequired && hasAnyInputValue);
+
   const handleRun = useCallback(async () => {
-    if (!selectedRepoId || !selectedWorkflow || !prompt.trim()) return;
+    if (!selectedRepoId || !selectedWorkflow) return;
+    if (declaredInputs.length > 0 && missingRequired) return;
+
+    const trimmedInputs: Record<string, string> = {};
+    for (const def of declaredInputs) {
+      const val = (inputValues[def.id] ?? "").trim();
+      if (val) trimmedInputs[def.id] = val;
+    }
+    const primary =
+      trimmedInputs.requirement ??
+      trimmedInputs.bug ??
+      trimmedInputs.question ??
+      Object.values(trimmedInputs)[0] ??
+      "";
+
     setSubmitting(true);
     setError(null);
     setLogs("");
     setRun(null);
     logOffset.current = 0;
     try {
-      const id = await triggerRun(selectedRepoId, selectedWorkflow, prompt.trim());
+      const id = await triggerRun(
+        selectedRepoId,
+        selectedWorkflow,
+        primary,
+        trimmedInputs
+      );
       setRunId(id);
     } catch (err: any) {
       setError(`Failed to start workflow run: ${err.message ?? "unknown error"}`);
     } finally {
       setSubmitting(false);
     }
-  }, [selectedRepoId, selectedWorkflow, prompt]);
+  }, [
+    selectedRepoId,
+    selectedWorkflow,
+    declaredInputs,
+    missingRequired,
+    inputValues,
+  ]);
 
   useEffect(() => {
     if (!runId || !selectedRepoId) return;
@@ -192,7 +248,6 @@ export default function App() {
   );
 
   const selectedRepo = repos.find((r) => r.id === selectedRepoId) ?? null;
-  const selectedWorkflowMeta = workflows.find((w) => w.name === selectedWorkflow);
 
   return (
     <div style={{ display: "flex", height: "100vh" }}>
@@ -436,26 +491,83 @@ export default function App() {
             flexShrink: 0,
           }}
         >
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Describe what you want this workflow to do..."
-            rows={3}
-            style={{
-              width: "100%",
-              padding: "12px 14px",
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              color: "var(--text)",
-              fontSize: 14,
-              fontFamily: "inherit",
-              resize: "vertical",
-              outline: "none",
-            }}
-            onFocus={(e) => (e.currentTarget.style.borderColor = "var(--accent)")}
-            onBlur={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
-          />
+          {declaredInputs.length === 0 ? (
+            <p style={{ color: "var(--text-dim)", fontSize: 13, margin: 0 }}>
+              {selectedWorkflow
+                ? "This workflow takes no inputs. Click Run Workflow to start."
+                : "Select a workflow to configure inputs."}
+            </p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {declaredInputs.map((inp) => {
+                const isLong = LONG_INPUT_IDS.has(inp.id);
+                const value = inputValues[inp.id] ?? "";
+                const onChange = (v: string) =>
+                  setInputValues((prev) => ({ ...prev, [inp.id]: v }));
+                const common = {
+                  value,
+                  onChange: (
+                    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
+                  ) => onChange(e.target.value),
+                  placeholder: inp.required
+                    ? `${inp.label} (required)`
+                    : `${inp.label} (optional)`,
+                  style: {
+                    width: "100%",
+                    padding: "10px 12px",
+                    background: "var(--surface)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    color: "var(--text)",
+                    fontSize: 14,
+                    fontFamily: "inherit",
+                    outline: "none",
+                    boxSizing: "border-box" as const,
+                  },
+                  onFocus: (
+                    e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>
+                  ) => (e.currentTarget.style.borderColor = "var(--accent)"),
+                  onBlur: (
+                    e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>
+                  ) => (e.currentTarget.style.borderColor = "var(--border)"),
+                };
+                return (
+                  <label
+                    key={inp.id}
+                    style={{ display: "flex", flexDirection: "column", gap: 4 }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: "var(--text-dim)",
+                        fontWeight: 600,
+                        letterSpacing: "0.02em",
+                      }}
+                    >
+                      {inp.label}
+                      {inp.required && (
+                        <span style={{ color: "var(--error)" }}> *</span>
+                      )}
+                      <span
+                        style={{
+                          marginLeft: 6,
+                          fontWeight: 400,
+                          color: "var(--text-dim)",
+                        }}
+                      >
+                        ({inp.id})
+                      </span>
+                    </span>
+                    {isLong ? (
+                      <textarea {...common} rows={3} style={{ ...common.style, resize: "vertical" }} />
+                    ) : (
+                      <input {...common} type="text" />
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+          )}
           <div
             style={{
               display: "flex",
@@ -471,24 +583,16 @@ export default function App() {
             )}
             <button
               onClick={handleRun}
-              disabled={
-                !selectedRepoId || !selectedWorkflow || !prompt.trim() || submitting
-              }
+              disabled={!canRun}
               style={{
                 padding: "8px 24px",
-                background:
-                  !selectedRepoId || !selectedWorkflow || !prompt.trim() || submitting
-                    ? "var(--border)"
-                    : "var(--accent)",
+                background: !canRun ? "var(--border)" : "var(--accent)",
                 color: "#fff",
                 border: "none",
                 borderRadius: 6,
                 fontSize: 14,
                 fontWeight: 600,
-                cursor:
-                  !selectedRepoId || !selectedWorkflow || !prompt.trim() || submitting
-                    ? "not-allowed"
-                    : "pointer",
+                cursor: !canRun ? "not-allowed" : "pointer",
                 transition: "background 0.15s",
               }}
             >
@@ -571,7 +675,7 @@ export default function App() {
               {runId
                 ? "Waiting for logs..."
                 : selectedRepoId
-                  ? "Select a workflow, enter a prompt, and click Run."
+                  ? "Select a workflow, fill in its inputs, and click Run."
                   : "Import a repo to get started."}
             </p>
           )}

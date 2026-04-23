@@ -32,7 +32,7 @@ runRoutes.post("/run-workflow", async (req: Request, res: Response) => {
     const config = loadConfig();
     const mergedInputs: Record<string, string> = {
       ...(inputs ?? {}),
-      requirement: prompt ?? inputs?.requirement ?? "",
+      requirement: inputs?.requirement ?? prompt ?? "",
     };
 
     const runId = await startRun(repo, workflow, prompt ?? "", mergedInputs, config);

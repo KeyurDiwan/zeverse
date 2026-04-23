@@ -3,7 +3,13 @@ import type { ArchonConfig } from "../config";
 import { createLLMProvider, LLMProvider } from "../llm";
 import type { Workflow } from "../workflows";
 import type { Repo } from "../repos";
-import { executeLLMStep, executeShellStep } from "./executors";
+import {
+  executeApplyStep,
+  executeEditStep,
+  executeLLMStep,
+  executePatchStep,
+  executeShellStep,
+} from "./executors";
 import { appendLog, RunState, saveState } from "./state";
 import type { TemplateContext } from "./template";
 
@@ -103,6 +109,21 @@ async function runWorkflow(
           break;
         case "shell":
           output = await executeShellStep(step, ctx, repo, runId, config.runner.timeout_ms);
+          break;
+        case "apply":
+          output = await executeApplyStep(step, ctx, repo, runId);
+          break;
+        case "patch":
+          output = await executePatchStep(
+            step,
+            ctx,
+            repo,
+            runId,
+            config.runner.timeout_ms
+          );
+          break;
+        case "edit":
+          output = await executeEditStep(step, ctx, repo, runId);
           break;
         default:
           throw new Error(`Unknown step kind: ${step.kind}`);

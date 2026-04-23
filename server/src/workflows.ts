@@ -11,11 +11,28 @@ export interface WorkflowInput {
 
 export interface WorkflowStep {
   id: string;
-  kind: "llm" | "shell" | "review";
+  kind: "llm" | "shell" | "review" | "apply" | "patch" | "edit";
   prompt?: string;
   command?: string;
   cwd?: string;
   continueOnError?: boolean;
+  /** For `apply`/`patch` steps: template whose rendered output is scanned for blocks. */
+  content?: string;
+  /** For `apply`/`patch` steps: if true, fail when no blocks are found. Defaults to true. */
+  requireBlocks?: boolean;
+  /**
+   * For `apply` steps: refuse to overwrite an existing file whose new size is smaller than
+   * this fraction of the old size (e.g. 0.4 means skip if new < 40% of old).
+   * Files <= `shrinkGuardMinBytes` are exempt. Set to 0 to disable. Defaults to 0.4.
+   */
+  shrinkGuardMinRatio?: number;
+  /** Files at or below this size are exempt from the shrink guard. Defaults to 1024. */
+  shrinkGuardMinBytes?: number;
+  /**
+   * For `patch` steps: if true, pass `--index` to `git apply` so the change is also staged.
+   * Defaults to false (work-tree only, matches how `apply` behaves).
+   */
+  stage?: boolean;
 }
 
 export interface Workflow {

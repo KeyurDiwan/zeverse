@@ -109,15 +109,48 @@ Templating uses `{{inputs.<id>}}` and `{{steps.<id>.output}}`.
 
 ## Slack bot
 
-Slash commands: `/archon-dev`, `/archon-harness`
+Three ways to drive Archon from Slack:
 
-Syntax:
+### 1. Slash commands
 
 ```
-/archon-dev <repo-id> <your requirement>
+/archon-dev     [<repo-id>] <your requirement>
+/archon-harness [<repo-id>] <your requirement>
 ```
 
-If no `<repo-id>` is provided, `ARCHON_DEFAULT_REPO_ID` (from `.env`) is used.
+### 2. @mentions (tag the bot in any channel)
+
+Invite the bot to a channel, then tag it:
+
+```
+@ArchonBot ubx-ui pr-review fix flaky login test
+@ArchonBot ubx-ui add empty-state to dashboard       # uses default workflow (dev)
+@ArchonBot fix readme typo                            # uses default repo + workflow
+@ArchonBot help
+```
+
+The bot replies in-thread with a run link back to the Archon Hub UI.
+
+### 3. Direct message
+
+DM the bot the same syntax (no mention needed):
+
+```
+ubx-ui pr-review fix flaky login test
+```
+
+### Slack app setup
+
+In your Slack app manifest / settings:
+
+- **Bot Token Scopes**: `app_mentions:read`, `chat:write`, `commands`, `im:history`,
+  `im:read`, `im:write`
+- **Event Subscriptions**: subscribe the bot to `app_mention` and `message.im`
+- **Slash Commands**: `/archon-dev`, `/archon-harness`
+- **Socket Mode**: enabled (set `SLACK_APP_TOKEN` with scope `connections:write`)
+
+Defaults: if `<repo-id>` is omitted, `ARCHON_DEFAULT_REPO_ID` is used. If `<workflow>`
+is omitted, `ARCHON_DEFAULT_WORKFLOW` (default `dev`) is used.
 
 ## License
 
