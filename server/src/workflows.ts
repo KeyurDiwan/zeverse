@@ -11,7 +11,7 @@ export interface WorkflowInput {
 
 export interface WorkflowStep {
   id: string;
-  kind: "llm" | "shell" | "review" | "apply" | "patch" | "edit";
+  kind: "llm" | "shell" | "review" | "apply" | "patch" | "edit" | "gdoc-fetch" | "gdoc-comment";
   prompt?: string;
   command?: string;
   cwd?: string;
@@ -33,6 +33,10 @@ export interface WorkflowStep {
    * Defaults to false (work-tree only, matches how `apply` behaves).
    */
   stage?: boolean;
+  /** For `gdoc-fetch` / `gdoc-comment`: Google Doc URL or ID (supports templates). */
+  docUrl?: string;
+  /** For `gdoc-comment`: step id whose output contains the queries JSON block. */
+  queriesFrom?: string;
 }
 
 export interface Workflow {

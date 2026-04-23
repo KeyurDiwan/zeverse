@@ -19,6 +19,9 @@ npm-debug.log*
 .env.*
 !.env.example
 
+# Google service account credentials
+config/gcp-service-account.json
+
 # Archon Hub runtime
 state/*
 !state/.gitkeep

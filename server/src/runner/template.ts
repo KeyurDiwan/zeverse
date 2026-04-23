@@ -4,7 +4,7 @@ export interface TemplateContext {
 }
 
 export function renderTemplate(template: string, ctx: TemplateContext): string {
-  return template.replace(/\{\{([\w.]+)\}\}/g, (_match, path: string) => {
+  return template.replace(/\{\{([\w.\-]+)\}\}/g, (_match, path: string) => {
     const parts = path.split(".");
     let current: any = ctx;
     for (const part of parts) {

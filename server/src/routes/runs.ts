@@ -4,6 +4,7 @@ import { findWorkflow } from "../workflows";
 import { requireRepo } from "../repos";
 import { startRun, getActiveRun } from "../runner";
 import { findStateByRunId, loadState, readLog } from "../runner/state";
+import { extractDocId, replyToComment } from "../integrations/gdocs";
 
 export const runRoutes = Router();
 
@@ -73,4 +74,19 @@ runRoutes.get("/logs/:id", (req: Request<{ id: string }>, res: Response) => {
 
   const { content, nextOffset } = readLog(repoId, id, offset);
   res.json({ content, nextOffset });
+});
+
+runRoutes.post("/gdoc-reply", async (req: Request, res: Response) => {
+  try {
+    const { docId: rawDocId, commentId, body } = req.body ?? {};
+    if (!rawDocId || !commentId || !body) {
+      res.status(400).json({ error: "docId, commentId, and body are required" });
+      return;
+    }
+    const docId = extractDocId(rawDocId);
+    const result = await replyToComment(docId, commentId, body);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });

@@ -84,11 +84,13 @@ steps:
 
 Step kinds:
 
-| Kind     | Purpose                                        |
-|----------|------------------------------------------------|
-| `llm`    | Send a prompt to the configured LLM            |
-| `review` | Same as `llm`, semantically marked as a review |
-| `shell`  | Execute a shell command in the target repo     |
+| Kind           | Purpose                                            |
+|----------------|---------------------------------------------------|
+| `llm`          | Send a prompt to the configured LLM               |
+| `review`       | Same as `llm`, semantically marked as a review    |
+| `shell`        | Execute a shell command in the target repo         |
+| `gdoc-fetch`   | Fetch plain text from a Google Doc (via `docUrl`)  |
+| `gdoc-comment` | Post comments on a Google Doc from a queries JSON  |
 
 Shell steps run with `cwd` resolved against the target repo's path (or relative to it, if `cwd:` is set on the step).
 
@@ -116,7 +118,12 @@ Three ways to drive Archon from Slack:
 ```
 /archon-dev     [<repo-id>] <your requirement>
 /archon-harness [<repo-id>] <your requirement>
+/archon-prd     [<repo-id>] <google-doc-url>
 ```
+
+`/archon-prd` reads the PRD from the linked Google Doc, analyses it against the
+repo codebase, posts open queries as comments on the doc, and replies in-thread
+with a finalised/not-finalised verdict plus a summary of the top open questions.
 
 ### 2. @mentions (tag the bot in any channel)
 
@@ -146,11 +153,20 @@ In your Slack app manifest / settings:
 - **Bot Token Scopes**: `app_mentions:read`, `chat:write`, `commands`, `im:history`,
   `im:read`, `im:write`
 - **Event Subscriptions**: subscribe the bot to `app_mention` and `message.im`
-- **Slash Commands**: `/archon-dev`, `/archon-harness`
+- **Slash Commands**: `/archon-dev`, `/archon-harness`, `/archon-prd`
 - **Socket Mode**: enabled (set `SLACK_APP_TOKEN` with scope `connections:write`)
 
 Defaults: if `<repo-id>` is omitted, `ARCHON_DEFAULT_REPO_ID` is used. If `<workflow>`
 is omitted, `ARCHON_DEFAULT_WORKFLOW` (default `dev`) is used.
+
+### Google Docs integration (for `/archon-prd`)
+
+1. Create a Google Cloud service account and download its JSON key.
+2. Place the JSON at `config/gcp-service-account.json` (gitignored) or set
+   `GOOGLE_SERVICE_ACCOUNT_PATH` in `.env` to a custom path.
+3. Share each PRD Google Doc with the service account email
+   (e.g. `your-sa@your-project.iam.gserviceaccount.com`) as **Editor** so it can
+   read the doc and post comments.
 
 ## License
 

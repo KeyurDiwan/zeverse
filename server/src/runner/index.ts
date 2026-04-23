@@ -10,6 +10,10 @@ import {
   executePatchStep,
   executeShellStep,
 } from "./executors";
+import {
+  executeGDocFetchStep,
+  executeGDocCommentStep,
+} from "./executors-gdoc";
 import { appendLog, RunState, saveState } from "./state";
 import type { TemplateContext } from "./template";
 
@@ -124,6 +128,12 @@ async function runWorkflow(
           break;
         case "edit":
           output = await executeEditStep(step, ctx, repo, runId);
+          break;
+        case "gdoc-fetch":
+          output = await executeGDocFetchStep(step, ctx, repo.id, runId);
+          break;
+        case "gdoc-comment":
+          output = await executeGDocCommentStep(step, ctx, repo.id, runId);
           break;
         default:
           throw new Error(`Unknown step kind: ${step.kind}`);

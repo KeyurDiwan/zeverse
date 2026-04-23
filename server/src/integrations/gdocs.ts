@@ -1,0 +1,162 @@
+import fs from "fs";
+import path from "path";
+import { google, docs_v1, drive_v3 } from "googleapis";
+
+const SA_PATH =
+  process.env.GOOGLE_SERVICE_ACCOUNT_PATH ??
+  path.resolve(__dirname, "../../../config/gcp-service-account.json");
+
+let _docs: docs_v1.Docs | null = null;
+let _drive: drive_v3.Drive | null = null;
+
+function getClients(): { docs: docs_v1.Docs; drive: drive_v3.Drive } {
+  if (_docs && _drive) return { docs: _docs, drive: _drive };
+
+  if (!fs.existsSync(SA_PATH)) {
+    throw new Error(
+      `Google service-account JSON not found at ${SA_PATH}. ` +
+        `Set GOOGLE_SERVICE_ACCOUNT_PATH or place the file at config/gcp-service-account.json`
+    );
+  }
+
+  const creds = JSON.parse(fs.readFileSync(SA_PATH, "utf-8"));
+  const auth = new google.auth.GoogleAuth({
+    credentials: creds,
+    scopes: [
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/drive",
+    ],
+  });
+
+  _docs = google.docs({ version: "v1", auth });
+  _drive = google.drive({ version: "v3", auth });
+  return { docs: _docs, drive: _drive };
+}
+
+/**
+ * Accepts a full Google Docs URL or a bare document ID and returns the ID.
+ */
+export function extractDocId(urlOrId: string): string {
+  const trimmed = urlOrId.trim().replace(/^<|>$/g, ""); // Slack wraps URLs in <>
+  const m = trimmed.match(/\/document\/d\/([a-zA-Z0-9_-]+)/);
+  if (m) return m[1];
+  // Treat as raw id if it looks like one (alphanumeric + dashes/underscores, 20+ chars)
+  if (/^[a-zA-Z0-9_-]{20,}$/.test(trimmed)) return trimmed;
+  throw new Error(
+    `Cannot extract Google Doc ID from: ${urlOrId.slice(0, 120)}`
+  );
+}
+
+/**
+ * Fetches the plain-text content of a Google Doc by flattening paragraph runs.
+ */
+export async function fetchDocText(docId: string): Promise<string> {
+  const { docs } = getClients();
+  const res = await docs.documents.get({ documentId: docId });
+  const body = res.data.body;
+  if (!body?.content) return "";
+  return flattenContent(body.content);
+}
+
+function flattenContent(
+  elements: docs_v1.Schema$StructuralElement[]
+): string {
+  const parts: string[] = [];
+  for (const el of elements) {
+    if (el.paragraph) {
+      const line = (el.paragraph.elements ?? [])
+        .map((e) => e.textRun?.content ?? "")
+        .join("");
+      parts.push(line);
+    } else if (el.table) {
+      for (const row of el.table.tableRows ?? []) {
+        const cells = (row.tableCells ?? []).map((cell) =>
+          flattenContent(cell.content ?? []).trim()
+        );
+        parts.push(cells.join(" | "));
+      }
+      parts.push("");
+    } else if (el.sectionBreak) {
+      parts.push("\n");
+    }
+  }
+  return parts.join("");
+}
+
+export interface CommentResult {
+  index: number;
+  body: string;
+  status: "ok" | "error";
+  commentId?: string;
+  error?: string;
+}
+
+/**
+ * Lists all open (non-deleted, non-resolved) comments on the doc.
+ * Returns just the content strings for dedup purposes.
+ */
+export async function listExistingComments(docId: string): Promise<Set<string>> {
+  const { drive } = getClients();
+  const bodies = new Set<string>();
+  let pageToken: string | undefined;
+
+  do {
+    const res = await drive.comments.list({
+      fileId: docId,
+      fields: "comments(content,deleted,resolved),nextPageToken",
+      pageSize: 100,
+      pageToken,
+    });
+    for (const c of res.data.comments ?? []) {
+      if (!c.deleted && !c.resolved && c.content) {
+        bodies.add(c.content.trim());
+      }
+    }
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return bodies;
+}
+
+/**
+ * Posts an unanchored comment on a Google Doc via the Drive v3 comments API.
+ */
+export async function addComment(
+  docId: string,
+  body: string
+): Promise<{ commentId: string }> {
+  const { drive } = getClients();
+  const res = await drive.comments.create({
+    fileId: docId,
+    fields: "id",
+    requestBody: { content: body },
+  });
+  return { commentId: res.data.id ?? "" };
+}
+
+/**
+ * Posts a reply on an existing comment. Falls back to a new top-level comment
+ * if the target comment has been resolved or deleted.
+ */
+export async function replyToComment(
+  docId: string,
+  commentId: string,
+  body: string
+): Promise<{ replyId: string }> {
+  const { drive } = getClients();
+  try {
+    const res = await drive.replies.create({
+      fileId: docId,
+      commentId,
+      fields: "id",
+      requestBody: { content: body },
+    });
+    return { replyId: res.data.id ?? "" };
+  } catch (err: any) {
+    if (err.code === 404) {
+      const fallback = await addComment(docId, body);
+      return { replyId: fallback.commentId };
+    }
+    throw err;
+  }
+}
