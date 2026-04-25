@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { loadConfig, resolveHubPath } from "../config";
 
-export type RunStatus = "queued" | "running" | "success" | "failed";
+export type RunStatus = "queued" | "running" | "success" | "failed" | "awaiting_approval";
 
 export interface StepResult {
   id: string;
@@ -14,6 +14,11 @@ export interface StepResult {
   error?: string;
 }
 
+export interface GateFailure {
+  stepId: string;
+  error: string;
+}
+
 export interface RunState {
   runId: string;
   repoId: string;
@@ -23,6 +28,8 @@ export interface RunState {
   steps: StepResult[];
   createdAt: string;
   finishedAt?: string;
+  branch?: string;
+  gateFailures?: GateFailure[];
 }
 
 function runsDir(repoId: string): string {
@@ -75,6 +82,42 @@ export function readLog(
   offset = 0
 ): { content: string; nextOffset: number } {
   const p = logPath(repoId, runId);
+  if (!fs.existsSync(p)) return { content: "", nextOffset: 0 };
+  const buf = fs.readFileSync(p, "utf-8");
+  const content = buf.slice(offset);
+  return { content, nextOffset: buf.length };
+}
+
+// ── Run events (NDJSON) ─────────────────────────────────────────────────────
+
+export interface RunEvent {
+  ts: string;
+  type: string;
+  stepId?: string;
+  stepKind?: string;
+  status?: string;
+  error?: string;
+  by?: string;
+  comment?: string;
+  [key: string]: unknown;
+}
+
+export function eventsPath(repoId: string, runId: string): string {
+  return path.join(runsDir(repoId), `${runId}.events.ndjson`);
+}
+
+export function appendEvent(repoId: string, runId: string, event: Omit<RunEvent, "ts">): void {
+  ensureRunsDir(repoId);
+  const line = JSON.stringify({ ts: new Date().toISOString(), ...event });
+  fs.appendFileSync(eventsPath(repoId, runId), line + "\n");
+}
+
+export function readEvents(
+  repoId: string,
+  runId: string,
+  offset = 0
+): { content: string; nextOffset: number } {
+  const p = eventsPath(repoId, runId);
   if (!fs.existsSync(p)) return { content: "", nextOffset: 0 };
   const buf = fs.readFileSync(p, "utf-8");
   const content = buf.slice(offset);

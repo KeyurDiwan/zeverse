@@ -1,3 +1,7 @@
+/**
+ * Thin shim — delegates to /api/harness/route and reshapes the response
+ * into the legacy RouteIntentResponse format so the UI keeps working.
+ */
 import { Router, Request, Response } from "express";
 import { listRepos, requireRepo } from "../repos";
 import { loadConfig } from "../config";
@@ -6,13 +10,6 @@ import { loadWorkflows } from "../workflows";
 import { matchWorkflowKeyword } from "../workflow-infer";
 
 export const routeIntentRoutes = Router();
-
-function extractFreshreleaseTaskUrl(text: string): string | undefined {
-  const m = text.match(
-    /https?:\/\/[^\s]+freshrelease\.com\/ws\/[^/\s]+\/tasks\/[^\s)]+/i
-  );
-  return m?.[0];
-}
 
 interface RouteIntentResponse {
   repoId: string | null;
@@ -24,7 +21,13 @@ interface RouteIntentResponse {
 }
 
 const FALLBACK_WORKFLOW = "ask";
-const CONFIDENCE_THRESHOLD = 0.6;
+
+function extractFreshreleaseTaskUrl(text: string): string | undefined {
+  const m = text.match(
+    /https?:\/\/[^\s]+freshrelease\.com\/ws\/[^/\s]+\/tasks\/[^\s)]+/i
+  );
+  return m?.[0];
+}
 
 async function inferRepoId(prompt: string): Promise<string | null> {
   const repos = listRepos();
@@ -120,9 +123,6 @@ routeIntentRoutes.post("/route-intent", async (req: Request, res: Response) => {
     }
 
     const workflowNames = new Set(workflows.map((w) => w.name));
-
-    // Same keyword ordering as `/api/infer-workflow` so harness matches the Hub UI / Slack
-    // parser (e.g. "analyze fr <url>" → fr-analyze, not fr-task-finisher).
     const keywordWorkflow = matchWorkflowKeyword(prompt, workflowNames);
     if (keywordWorkflow) {
       const frNeedsUrl =
@@ -143,116 +143,34 @@ routeIntentRoutes.post("/route-intent", async (req: Request, res: Response) => {
       }
     }
 
-    const workflowCatalog = workflows
-      .map((w) => {
-        const inputList = w.inputs
-          .map((inp) => `${inp.id}${inp.required ? " (required)" : ""}: ${inp.label}`)
-          .join("; ");
-        return `- name: ${w.name} | description: ${w.description} | inputs: [${inputList}]`;
-      })
-      .join("\n");
+    // Delegate to harness route internally
+    const harnessUrl = `http://localhost:${process.env.ARCHON_SERVER_PORT ?? "3100"}/api/harness/route`;
+    const harnessRes = await fetch(harnessUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, repoId }),
+    });
+    const harnessData = await harnessRes.json() as any;
 
-    const llm = createLLMProvider(loadConfig());
-    const response = await llm.chat([
-      {
-        role: "system",
-        content: [
-          "You are a smart intent router for a software development assistant.",
-          "Given a user prompt and a list of available workflows, pick the single best workflow.",
-          "Also extract values for any workflow inputs that the prompt implicitly provides.",
-          "",
-          "Respond with ONLY a JSON object (no markdown fences, no prose):",
-          '{',
-          '  "workflow": "<workflow name from the list>",',
-          '  "inputs": { "<inputId>": "<extracted value>", ... },',
-          '  "confidence": <0.0 to 1.0>,',
-          '  "reason": "<one sentence explaining the pick>"',
-          '}',
-          "",
-          "Rules:",
-          '- confidence 0.9+ : prompt clearly matches a specific workflow.',
-          '- confidence 0.6-0.9 : reasonable match but some ambiguity.',
-          '- confidence < 0.6 : no good match; set workflow to "ask".',
-          '- For the "inputs" field, map prompt content to the workflow\'s declared inputs.',
-          '  The main prompt text should go into the primary required input (usually "requirement", "bug", or "focus").',
-          '- If the prompt is a general question, explanation request, or does not match any workflow well, use "ask".',
-          '- ONLY use workflow names from the provided list.',
-          "",
-          "Routing hints for common intents:",
-          '- "analyze FR card" / "analyze fr …" → "fr-analyze" (set inputs.frUrl from task URL)',
-          '- Freshrelease task URL without analyze intent → "fr-task-finisher" (set inputs.frUrl)',
-          '- "create epic/task/card" → "fr-card-creator"',
-          '- "write tests for <file>" → "test-write" (set inputs.target)',
-          '- "raise/open/create PR" → "pr-raise"',
-          '- "review PR" or GitHub PR URL → "code-review" (set inputs.pr)',
-          '- Google Doc URL or "PRD" → "prd-analysis" (set inputs.docUrl)',
-          '- Bug fix request → "fix-bug"',
-        ].join("\n"),
-      },
-      {
-        role: "user",
-        content: `Available workflows:\n${workflowCatalog}\n\nUser prompt: ${prompt}`,
-      },
-    ]);
-
-    const text = response.content.trim();
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-
-    if (!jsonMatch) {
+    if (harnessData.type === "proposal") {
       res.json({
-        repoId,
+        repoId: harnessData.repoId,
+        workflow: harnessData.workflow,
+        inputs: harnessData.inputs ?? { requirement: prompt },
+        confidence: harnessData.confidence ?? 0,
+        reason: harnessData.reason ?? "",
+        fallback: false,
+      } satisfies RouteIntentResponse);
+    } else {
+      res.json({
+        repoId: harnessData.repoId ?? repoId,
         workflow: FALLBACK_WORKFLOW,
         inputs: { requirement: prompt },
-        confidence: 0,
-        reason: "LLM did not return valid JSON",
+        confidence: harnessData.confidence ?? 0,
+        reason: harnessData.reason ?? harnessData.answer ?? "",
         fallback: true,
       } satisfies RouteIntentResponse);
-      return;
     }
-
-    let parsed: any;
-    try {
-      parsed = JSON.parse(jsonMatch[0]);
-    } catch {
-      res.json({
-        repoId,
-        workflow: FALLBACK_WORKFLOW,
-        inputs: { requirement: prompt },
-        confidence: 0,
-        reason: "LLM returned unparseable JSON",
-        fallback: true,
-      } satisfies RouteIntentResponse);
-      return;
-    }
-
-    const workflow = typeof parsed.workflow === "string" ? parsed.workflow : FALLBACK_WORKFLOW;
-    const confidence = typeof parsed.confidence === "number" ? parsed.confidence : 0;
-    const reason = typeof parsed.reason === "string" ? parsed.reason : "";
-    const inputs =
-      typeof parsed.inputs === "object" && parsed.inputs !== null ? parsed.inputs : {};
-
-    if (!workflowNames.has(workflow) || confidence < CONFIDENCE_THRESHOLD) {
-      res.json({
-        repoId,
-        workflow: FALLBACK_WORKFLOW,
-        inputs: { requirement: prompt, ...inputs },
-        confidence,
-        reason: !workflowNames.has(workflow)
-          ? `LLM picked unknown workflow "${workflow}" — falling back to ask`
-          : reason || "Low confidence",
-        fallback: true,
-      } satisfies RouteIntentResponse);
-      return;
-    }
-
-    res.json({
-      repoId,
-      workflow,
-      inputs: { requirement: prompt, ...inputs },
-      confidence,
-      reason,
-      fallback: false,
-    } satisfies RouteIntentResponse);
   } catch (err: any) {
     res.status(500).json({
       error: `Route-intent failed: ${err.message}`,

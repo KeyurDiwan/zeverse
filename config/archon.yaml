@@ -8,8 +8,15 @@ llm:
 
 runner:
   timeout_ms: 300000
+  # milestone_steps: ["plan", "implement", "validate", "review", "open-pr"]
 
 paths:
   repos_file: repos.json
   state_dir: state
   clone_dir: repos
+
+# Uncomment to restrict which repos, workflows, and Slack channels can trigger runs.
+# policy:
+#   allowed_repos: ["*"]
+#   allowed_workflows: ["*"]
+#   allowed_slack_channels: ["*"]

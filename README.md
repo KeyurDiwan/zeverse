@@ -100,10 +100,57 @@ Step kinds:
 | `fr-fetch`     | Fetch a Freshrelease task with all comments (`frUrl`) |
 | `fr-create`    | Create FR issues from a fenced `fr-issues` JSON block (`contentFrom`) |
 | `fr-comment`   | Post a comment on a Freshrelease task (`frUrl`, `bodyFrom`) |
+| `workflow`     | Dispatch a child workflow (`workflowFrom`, `childWorkflow`, `inputsFrom`) |
+| `approval`     | Pause the run and wait for a human to approve or reject before continuing (`surface: slack\|ui\|both`, `approvalTimeoutMs`) |
 
 Steps support an optional `when:` field — a template expression that is evaluated at
 runtime. When the rendered value is empty, `"false"`, `"no"`, or `"0"`, the step is
 skipped. This enables mode-driven branching within a single workflow.
+
+### Step retries and loops
+
+Any step can declare `retries` (number of retry attempts on failure) and
+`retryBackoffMs` (base delay in ms; doubles each attempt). For iterative
+convergence, use `loopUntil` (a template expression that re-evaluates after each
+run; the step loops until it renders truthy) with `maxIterations` (default 10).
+
+```yaml
+- id: validate
+  kind: shell
+  command: npm run lint && npm test -- --watchAll=false
+  retries: 2
+  retryBackoffMs: 2000
+
+- id: fix-loop
+  kind: llm
+  prompt: "Fix the failing tests: {{steps.validate.output}}"
+  loopUntil: "{{steps.validate.output}}"
+  maxIterations: 3
+```
+
+### Workflow-level options
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `isolation` | `"branch"` \| `"none"` | `"branch"` | Per-run git branch isolation. `"branch"` creates `archon/<wf>/<runId>` and serialises runs per repo. |
+| `gates` | `string[]` | `[]` | Step ids that must be `"success"` for the run to pass. Checked after all steps finish. |
+| `onGateFail` | `{ childWorkflow: string }` | — | Dispatch this child workflow when gates fail (e.g. a "fix" workflow). |
+
+### Approval gates
+
+Add an `approval` step to pause the run until a human approves or rejects via
+Slack buttons or the API:
+
+```yaml
+- id: approve-push
+  kind: approval
+  prompt: "Ready to push and open PR. Approve to continue."
+  surface: slack
+  approvalTimeoutMs: 600000   # 10 min timeout
+```
+
+The Slack bot posts Approve/Reject buttons in the run thread. API callers can
+use `POST /api/runs/:id/approve` or `POST /api/runs/:id/reject`.
 
 Shell steps run with `cwd` resolved against the target repo's path (or relative to it, if `cwd:` is set on the step).
 
@@ -124,13 +171,62 @@ Templating uses `{{inputs.<id>}}` and `{{steps.<id>.output}}`.
 | POST   | `/api/gdoc-comment`           | Post a top-level Google Doc comment (`{docId, body}`) |
 | POST   | `/api/gdoc-suggest`           | Apply tracked-change suggestions (`{docId, edits[]}`) |
 | POST   | `/api/infer-repo`             | LLM-inferred repo selection (`{prompt}`) |
-| POST   | `/api/route-intent`           | LLM-based intent router (`{prompt, repoId?}`) — returns `{workflow, inputs, confidence, reason, fallback}` |
-| POST   | `/api/smart-reply`            | Universal LLM handler (`{prompt, threadContext?, repoId?, surface}`) — returns `{type: answer\|clarify\|workflow, ...}` |
+| POST   | `/api/harness/route`          | Unified routing (`{prompt, repoId?, threadContext?, surface}`) — returns `{type: proposal\|answer\|clarify, workflow, inputs, alternatives, confidence}` |
+| POST   | `/api/harness/execute`        | Execute a confirmed workflow (`{repoId, workflow, inputs, prompt, slackUser?, channel?, surface?}`) — returns `{runId}`. Validates policy + required inputs. |
+| GET    | `/api/runs/:id/events?repoId=&offset=` | Tail run events (NDJSON). Used for milestone polling. |
+| POST   | `/api/runs/:id/approve`       | Approve a pending approval gate (`{by, comment?}`) |
+| POST   | `/api/runs/:id/reject`        | Reject a pending approval gate (`{by, reason?}`) |
+| POST   | `/api/route-intent`           | Legacy shim — delegates to `/api/harness/route`, returns old format |
+| POST   | `/api/smart-reply`            | Legacy shim — delegates to `/api/harness/route`, returns old format |
 | GET    | `/health`                     | Health check                            |
+
+## Policy & audit
+
+Optionally restrict which repos, workflows, and Slack channels can trigger runs
+by adding a `policy:` block to `config/archon.yaml`:
+
+```yaml
+policy:
+  allowed_repos: ["ubx-ui", "freshid-ui-v2"]
+  allowed_workflows: ["dev", "fix-bug", "test-write"]
+  allowed_slack_channels: ["C-TEAM-ARCHON"]
+```
+
+Use `["*"]` (the default) to allow anything. Violations return HTTP 403 with
+a `reason` field.
+
+Every successful `/api/harness/execute` call appends a JSON line to
+`state/audit.log` recording the timestamp, Slack user, channel, repo, workflow,
+run ID, and surface. Secrets are never written to the log.
+
+## Observability
+
+Each step transition emits an NDJSON event to `state/<repoId>/runs/<runId>.events.ndjson`.
+Events include `step_started`, `step_finished`, `step_retry`, `step_skipped`,
+`awaiting_approval`, `approved`, `gates_failed`, and `run_finished`.
+
+The Slack bot polls `/api/runs/:id/events` and posts in-thread milestone messages
+for steps listed in `runner.milestone_steps` (configurable in `config/archon.yaml`).
 
 ## Slack bot
 
-Three ways to drive Archon from Slack:
+Three surfaces, one pipeline. Every Slack interaction routes through the
+**harness** — a unified entry point that picks the repo, selects the best
+workflow, and **always asks for confirmation** before running.
+
+### Harness flow
+
+```
+User message (slash / @mention / DM)
+  → POST /api/harness/route (repo pick → keyword shortcut → LLM routing)
+  → Bot posts: "I'd run `fix-bug` on `ubx-ui` — [Run] [Pick another…] [Cancel]"
+  → User clicks Run
+  → POST /api/harness/execute → startRun → poll → result in thread
+```
+
+Each target repo owns its routing logic via `.archon/workflows/harness.yaml`,
+which contains an LLM routing step and a `workflow` dispatch step. The hub falls
+back to server-side LLM routing when no harness.yaml exists.
 
 ### 1. Slash commands
 
@@ -158,16 +254,17 @@ prompt and an LLM-based intent router picks the best workflow automatically:
 | "raise PR" | `pr-raise` |
 | `https://docs.google.com/document/d/…` | `prd-analysis` |
 
-The router posts the chosen workflow + reason in Slack before execution starts.
-If the LLM can't confidently pick a workflow (confidence < 60%), it falls back to
-`ask` — a read-only workflow that searches the codebase and answers the question.
+The router posts the chosen workflow + reason in Slack with **Run / Pick another
+/ Cancel** buttons. The workflow only executes after the user clicks **Run**.
+If the LLM can't confidently pick a workflow (confidence < 60%), it answers the
+question directly instead.
 
-When the router picks a write-capable workflow (`fix-bug`, `dev`, `lint-fix`),
+When the user picks a write-capable workflow (`fix-bug`, `dev`, `lint-fix`),
 edits are applied to disk and the result includes a diff summary, review verdict,
 and a PR link (when available).
 
-**Thread follow-ups:** `@mention` the bot inside a `/archon-harness` thread and
-it re-routes the new prompt with full thread history as context — so "now fix it"
+**Thread follow-ups:** `@mention` the bot inside a harness thread and it
+re-routes the new prompt with full thread history as context — so "now fix it"
 works after a diagnosis.
 
 `/archon-prd` reads the PRD from the linked Google Doc, analyses it against the
@@ -176,20 +273,17 @@ with a finalised/not-finalised verdict plus a summary of the top open questions.
 
 ### 2. @mentions (tag the bot in any channel)
 
-Invite the bot to a channel, then tag it. The bot answers **everything** — it
-reads the full Slack thread for context, then decides whether to answer the
-question directly, ask a clarifying question, or trigger a workflow:
+Invite the bot to a channel, then tag it. The bot routes through the same
+harness pipeline — answers questions directly, asks clarifying questions for
+ambiguous requests, and shows confirm buttons before running workflows:
 
 ```
 @ArchonBot how does the billing router work?          # answered directly via LLM
-@ArchonBot fix the login bug                          # triggers fix-bug workflow
+@ArchonBot fix the login bug                          # proposes fix-bug → [Run] [Pick another] [Cancel]
 @ArchonBot fix something                              # asks "Which repo / what exactly is broken?"
-@ArchonBot ubx-ui pr-review fix flaky login test      # triggers pr-review workflow
+@ArchonBot ubx-ui pr-review fix flaky login test      # proposes pr-review → confirm buttons
 @ArchonBot help                                       # friendly greeting + capabilities
 ```
-
-When the bot triggers a workflow it replies in-thread with a run link back to
-the Archon Hub UI.
 
 ### 2a. @mentions inside PRD threads
 
@@ -216,12 +310,12 @@ Recognised trigger phrases:
 - Update: `update`, `edit`, `apply`, `update prd`, `update the doc`, `update prd doc`
 - Answer: `answer`, `answer this`, `reply`, `respond`, `post answers`
 
-Any other @mention text in a PRD thread falls through to the normal workflow trigger.
+Any other @mention text in a PRD thread falls through to the harness pipeline.
 
 ### 3. Direct message
 
-DM the bot (no mention needed). Same smart behaviour as @mentions — it answers
-questions, asks clarifying follow-ups, or triggers workflows:
+DM the bot (no mention needed). Same harness behaviour as @mentions — it answers
+questions, asks clarifying follow-ups, or proposes workflows with confirm buttons:
 
 ```
 how does the billing router work?
@@ -235,21 +329,17 @@ In your Slack app manifest / settings:
 - **Bot Token Scopes**: `app_mentions:read`, `chat:write`, `commands`, `im:history`,
   `im:read`, `im:write`, `channels:history`, `groups:history`
 - **Event Subscriptions**: subscribe the bot to `app_mention` and `message.im`
+- **Interactivity**: enable Interactivity & Shortcuts (for the confirm buttons)
 - **Slash Commands**: `/archon-dev`, `/archon-harness`, `/archon-prd`
-  - `/archon-harness` uses the LLM intent router (`/api/route-intent`) — no fixed workflow
+  - `/archon-harness` uses the unified harness router (`/api/harness/route`)
 - **Socket Mode**: enabled (set `SLACK_APP_TOKEN` with scope `connections:write`)
 
 Defaults:
 - **Repo**: if `<repo-id>` is omitted the bot first checks `ARCHON_DEFAULT_REPO_ID`.
   If that is unset, it asks the LLM to pick the best-matching repo from the
   registry (or auto-selects when only one repo exists).
-- **Workflow**: if `<workflow>` is omitted (and the command doesn't force one),
-  the bot matches keywords in the prompt to available workflows:
-  `fix`/`bug` → `fix-bug`, `review`/`pr` → `code-review`, `lint` → `lint-fix`,
-  `test` → `test-write`, `explain` → `explain-codebase`, `upgrade`/`bump` → `upgrade-dep`,
-  `create epic`/`create task`/`card` → `fr-card-creator`, `analyze FR` → `fr-analyze`,
-  `finish FR` / FR URL → `fr-task-finisher`, `raise PR` → `pr-raise`.
-  Falls back to `ARCHON_DEFAULT_WORKFLOW` (default `dev`).
+- **Workflow**: determined automatically by the harness router (keyword matching
+  then LLM). Falls back to `ask` when confidence is low.
 
 ### Google Docs integration (for `/archon-prd`)
 
@@ -303,6 +393,7 @@ works here.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
+| `harness` | Any prompt (universal entry) | Route step picks the best workflow, confirm buttons shown, then dispatches the chosen workflow via the `workflow` step kind |
 | `prd-analysis` | Google Doc URL / "PRD" | Fetch PRD, cross-ref codebase, post queries as GDoc comments, reply/resolve answered threads, suggest edits, write deliverable, open PR |
 | `fr-card-creator` | "create epic/task/card" | Parse prompt or PRD markdown into FR issues, create Epic then Tasks in Freshrelease |
 | `fr-analyze` | FR URL / "analyze FR" | Fetch FR card, cross-check against codebase, produce structured analysis with a design-level recommended solution (files, approach, illustrative snippets — no repo changes); from Slack, posts the `## Summary` in the thread |

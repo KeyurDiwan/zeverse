@@ -452,6 +452,63 @@ interface RunState {
   workflow?: string;
   status: string;
   steps: { id: string; status: string; output: string; error?: string }[];
+  /** Present when the run failed due to gate rules (no step may be marked `failed`). */
+  gateFailures?: { stepId: string; error: string }[];
+}
+
+/**
+ * The server can mark a run `failed` without any step in `status: "failed"`
+ * (e.g. LLM init, git isolation, branch creation, or gate checks). The UI shows
+ * logs; Slack used to only show "Step: ? / Error: unknown" — this surfaces real reasons.
+ */
+async function formatRunFailureForSlack(
+  title: string,
+  runId: string,
+  repoId: string,
+  state: RunState
+): Promise<string> {
+  const failedStep = state.steps.find((s) => s.status === "failed");
+  const hubLink = `<${ARCHON_UI_URL}/?run=${runId}|View run details>`;
+
+  if (failedStep) {
+    return [
+      `*${title}*`,
+      `Step: \`${failedStep.id}\``,
+      `Error: ${failedStep.error ?? "unknown"}`,
+      hubLink,
+    ].join("\n");
+  }
+
+  const lines: string[] = [`*${title}*`];
+  if (state.gateFailures && state.gateFailures.length > 0) {
+    lines.push("*Gate check:*");
+    for (const g of state.gateFailures) {
+      lines.push(`• \`${g.stepId}\`: ${g.error}`);
+    }
+  } else {
+    lines.push(
+      "_No step-level error on record._ Common causes: **LLM init** (check `config/archon.yaml` and env), **git isolation** (uncommitted changes on the server’s repo copy), or **branch creation** failed. *Log tail* or Archon Hub has the line that explains it."
+    );
+  }
+
+  let tail = "";
+  try {
+    const res = await fetch(
+      `${archonBaseUrl()}/api/logs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}&offset=0`
+    );
+    if (res.ok) {
+      const data = await archonResponseJson<{ content?: string }>(res, "GET /api/logs");
+      const t = (data.content ?? "").trim();
+      if (t.length > 0) {
+        const slice = t.length > 1800 ? t.slice(-1800) : t;
+        tail = `\n*Log tail:*\n\`\`\`\n${slice}\n\`\`\``;
+      }
+    }
+  } catch {
+    // best-effort
+  }
+
+  return `${lines.join("\n")}${tail}\n${hubLink}`;
 }
 
 /** Markdown body under a `## Summary` heading (same rule as server `extractFrAnalysisSummarySection`). */
@@ -498,16 +555,8 @@ async function pollRunAndPostResult(
     if (state.status !== "success" && state.status !== "failed") continue;
 
     if (state.status === "failed") {
-      const failedStep = state.steps.find((s) => s.status === "failed");
-      await client.chat.postMessage({
-        channel,
-        thread_ts,
-        text:
-          `*Workflow failed*\n` +
-          `Step: \`${failedStep?.id ?? "?"}\`\n` +
-          `Error: ${failedStep?.error ?? "unknown"}\n` +
-          `<${ARCHON_UI_URL}/?run=${runId}|View run details>`,
-      });
+      const text = await formatRunFailureForSlack("Workflow failed", runId, repoId, state);
+      await client.chat.postMessage({ channel, thread_ts, text });
       return;
     }
 
@@ -665,81 +714,10 @@ app.command("/archon-harness", async ({ command, ack, respond, client, logger })
     text: `_Thinking... routing your request to the best workflow._`,
   });
 
-  try {
-    const route = await routeIntent(prompt, repoId ?? undefined);
-
-    if (!route.repoId) {
-      await respond({
-        response_type: "ephemeral",
-        text: await noRepoErrorText("/archon-harness"),
-      });
-      return;
-    }
-
-    const result = await triggerWorkflow(
-      route.repoId,
-      route.workflow,
-      prompt,
-      route.inputs
-    );
-
-    if (result.error) {
-      await respond({
-        response_type: "ephemeral",
-        text: `Failed to start workflow: ${result.error}`,
-      });
-      return;
-    }
-
-    const runId = result.runId ?? "";
-    const fallbackNote = route.fallback ? " _(fallback)_" : "";
-
-    await respond({
-      response_type: "in_channel",
-      blocks: [
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: [
-              `*Archon harness started*`,
-              `Routed to: \`${route.workflow}\`${fallbackNote}`,
-              `Reason: ${route.reason}`,
-              `Repo: \`${route.repoId}\` | Confidence: ${(route.confidence * 100).toFixed(0)}%`,
-              `Prompt: ${prompt}`,
-              `Run ID: \`${runId}\``,
-              `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
-            ].join("\n"),
-          },
-        },
-      ],
-    });
-
-    const thread_ts = command.ts ?? "";
-
-    saveHarnessThread({
-      channel: command.channel_id,
-      threadTs: thread_ts,
-      repoId: route.repoId,
-      lastRunId: runId,
-      lastWorkflow: route.workflow,
-      history: [prompt],
-    });
-
-    pollRunAndPostResult(
-      runId,
-      route.repoId,
-      command.channel_id,
-      thread_ts,
-      client,
-      logger
-    ).catch((err) => logger.error("pollRunAndPostResult error:", err));
-  } catch (err: any) {
-    await respond({
-      response_type: "ephemeral",
-      text: `Error connecting to Archon server: ${err.message}`,
-    });
-  }
+  const thread_ts = command.ts ?? "";
+  handleHarnessMessage(prompt, command.channel_id, thread_ts, client, logger, "slash", repoId).catch(
+    (err) => logger.error("handleHarnessMessage (slash) error:", err)
+  );
 });
 
 // ─── /archon-prd (PRD analysis) ────────────────────────────────────────────
@@ -957,16 +935,8 @@ async function pollRunAndReply(
     if (state.status !== "success" && state.status !== "failed") continue;
 
     if (state.status === "failed") {
-      const failedStep = state.steps.find((s) => s.status === "failed");
-      await client.chat.postMessage({
-        channel,
-        thread_ts,
-        text:
-          `*PRD analysis failed*\n` +
-          `Step: \`${failedStep?.id ?? "?"}\`\n` +
-          `Error: ${failedStep?.error ?? "unknown"}\n` +
-          `<${ARCHON_UI_URL}/?run=${runId}|View run details>`,
-      });
+      const text = await formatRunFailureForSlack("PRD analysis failed", runId, repoId, state);
+      await client.chat.postMessage({ channel, thread_ts, text });
       return;
     }
 
@@ -1337,16 +1307,8 @@ async function pollThreadSync(
     if (state.status !== "success" && state.status !== "failed") continue;
 
     if (state.status === "failed") {
-      const failedStep = state.steps.find((s) => s.status === "failed");
-      await client.chat.postMessage({
-        channel,
-        thread_ts,
-        text:
-          `*PRD thread sync failed*\n` +
-          `Step: \`${failedStep?.id ?? "?"}\`\n` +
-          `Error: ${failedStep?.error ?? "unknown"}\n` +
-          `<${ARCHON_UI_URL}/?run=${runId}|View run details>`,
-      });
+      const text = await formatRunFailureForSlack("PRD thread sync failed", runId, ctx.repoId, state);
+      await client.chat.postMessage({ channel, thread_ts, text });
       return;
     }
 
@@ -1446,55 +1408,289 @@ function buildGenericThreadContext(messages: any[]): string {
   return lines.join("\n");
 }
 
-// ─── Smart-reply caller ─────────────────────────────────────────────────────
+// ─── Harness route + execute callers ────────────────────────────────────────
 
-interface SmartReplyResult {
-  type: "answer" | "clarify" | "workflow";
+interface HarnessRouteResult {
+  type: "proposal" | "answer" | "clarify";
+  repoId: string | null;
+  workflow?: string;
+  inputs?: Record<string, string>;
+  alternatives?: string[];
+  confidence: number;
+  reason: string;
   answer?: string;
   question?: string;
   missing?: string[];
-  workflow?: string;
-  inputs?: Record<string, string>;
-  repoId: string | null;
-  confidence: number;
-  reason: string;
 }
 
-async function callSmartReply(
+async function callHarnessRoute(
   prompt: string,
   threadContext: string,
   repoId: string | null,
-  surface: "mention" | "dm"
-): Promise<SmartReplyResult> {
+  surface: string
+): Promise<HarnessRouteResult> {
   const body: Record<string, any> = { prompt, surface };
   if (threadContext) body.threadContext = threadContext;
   if (repoId) body.repoId = repoId;
 
-  const res = await fetch(`${ARCHON_SERVER_URL}/api/smart-reply`, {
+  const res = await fetch(`${ARCHON_SERVER_URL}/api/harness/route`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return archonResponseJson<SmartReplyResult>(res, "POST /api/smart-reply");
+  return archonResponseJson<HarnessRouteResult>(res, "POST /api/harness/route");
 }
 
-async function handleSmartReply(
+interface ExecuteOptions {
+  slackUser?: string;
+  channel?: string;
+  surface?: string;
+}
+
+async function callHarnessExecute(
+  repoId: string,
+  workflow: string,
+  inputs: Record<string, string>,
+  prompt: string,
+  opts: ExecuteOptions = {}
+): Promise<RunResponse & { missing?: string[] }> {
+  const res = await fetch(`${ARCHON_SERVER_URL}/api/harness/execute`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      repoId, workflow, inputs, prompt,
+      slackUser: opts.slackUser,
+      channel: opts.channel,
+      surface: opts.surface,
+    }),
+  });
+  return archonResponseJson<RunResponse & { missing?: string[] }>(res, "POST /api/harness/execute");
+}
+
+// ─── Proposal store (avoid Slack value 2KB limit) ───────────────────────────
+
+interface StoredProposal {
+  repoId: string;
+  workflow: string;
+  inputs: Record<string, string>;
+  alternatives: string[];
+  prompt: string;
+  confidence: number;
+  reason: string;
+  channel: string;
+  threadTs: string;
+}
+
+const proposalStore = new Map<string, StoredProposal>();
+let proposalCounter = 0;
+
+function storeProposal(p: StoredProposal): string {
+  const id = `p-${++proposalCounter}-${Date.now()}`;
+  proposalStore.set(id, p);
+  setTimeout(() => proposalStore.delete(id), 10 * 60 * 1000);
+  return id;
+}
+
+// ─── Block Kit confirm UI ───────────────────────────────────────────────────
+
+function proposalBlocks(proposalId: string, p: StoredProposal) {
+  const altText = p.alternatives.length > 0
+    ? `\nAlternatives: ${p.alternatives.map((a) => `\`${a}\``).join(", ")}`
+    : "";
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: [
+          `*Harness routed your request*`,
+          `Workflow: \`${p.workflow}\``,
+          `Repo: \`${p.repoId}\` | Confidence: ${(p.confidence * 100).toFixed(0)}%`,
+          `Reason: ${p.reason}`,
+          `Prompt: ${p.prompt.length > 200 ? p.prompt.slice(0, 200) + "…" : p.prompt}`,
+          altText,
+        ].filter(Boolean).join("\n"),
+      },
+    },
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Run" },
+          style: "primary",
+          action_id: "harness_run",
+          value: proposalId,
+        },
+        ...(p.alternatives.length > 0
+          ? [
+              {
+                type: "static_select",
+                placeholder: { type: "plain_text" as const, text: "Pick another..." },
+                action_id: "harness_pick",
+                options: p.alternatives.map((alt) => ({
+                  text: { type: "plain_text" as const, text: alt },
+                  value: `${proposalId}:${alt}`,
+                })),
+              },
+            ]
+          : []),
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Cancel" },
+          action_id: "harness_cancel",
+          value: proposalId,
+        },
+      ],
+    },
+  ];
+}
+
+// ─── Run event poller (milestones + approval detection) ─────────────────────
+
+const MILESTONE_STEPS = new Set(
+  (process.env.ARCHON_MILESTONE_STEPS ?? "plan,implement,validate,review,open-pr")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+
+interface RunEventLine {
+  ts: string;
+  type: string;
+  stepId?: string;
+  stepKind?: string;
+  status?: string;
+  error?: string;
+  prompt?: string;
+  surface?: string;
+  [key: string]: any;
+}
+
+async function pollRunEvents(
+  runId: string,
+  repoId: string,
+  channel: string,
+  thread_ts: string,
+  client: any,
+  logger: any
+): Promise<void> {
+  const maxAttempts = 400;
+  const intervalMs = 3000;
+  let offset = 0;
+  const postedMilestones = new Set<string>();
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+
+    let content: string;
+    let nextOffset: number;
+    try {
+      const res = await fetch(
+        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}/events?repoId=${encodeURIComponent(repoId)}&offset=${offset}`
+      );
+      const data = await archonResponseJson<{ content: string; nextOffset: number }>(
+        res, "GET /api/runs/:id/events"
+      );
+      content = data.content;
+      nextOffset = data.nextOffset;
+    } catch {
+      continue;
+    }
+
+    if (content) {
+      offset = nextOffset;
+      const lines = content.trim().split("\n").filter(Boolean);
+      for (const line of lines) {
+        let ev: RunEventLine;
+        try { ev = JSON.parse(line); } catch { continue; }
+
+        if (ev.type === "awaiting_approval" && ev.stepId) {
+          const approvalMsg = ev.prompt ?? "Approval required to continue this workflow.";
+          await client.chat.postMessage({
+            channel,
+            thread_ts,
+            text: `*Approval needed* — \`${ev.stepId}\`\n${approvalMsg}`,
+            blocks: [
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: `*Approval needed* for step \`${ev.stepId}\`\n${approvalMsg}`,
+                },
+              },
+              {
+                type: "actions",
+                elements: [
+                  {
+                    type: "button",
+                    text: { type: "plain_text", text: "Approve" },
+                    style: "primary",
+                    action_id: "approval_approve",
+                    value: `${runId}:${repoId}`,
+                  },
+                  {
+                    type: "button",
+                    text: { type: "plain_text", text: "Reject" },
+                    style: "danger",
+                    action_id: "approval_reject",
+                    value: `${runId}:${repoId}`,
+                  },
+                ],
+              },
+            ],
+          });
+        }
+
+        if (ev.type === "step_finished" && ev.stepId && MILESTONE_STEPS.has(ev.stepId)) {
+          const key = `${ev.stepId}:${ev.status}`;
+          if (!postedMilestones.has(key)) {
+            postedMilestones.add(key);
+            const icon = ev.status === "success" ? ":white_check_mark:" : ":x:";
+            await client.chat.postMessage({
+              channel,
+              thread_ts,
+              text: `${icon} Step \`${ev.stepId}\` ${ev.status}`,
+            });
+          }
+        }
+
+        if (ev.type === "run_finished" || ev.type === "gates_failed") {
+          return;
+        }
+      }
+    }
+
+    // Also check if the run itself has terminated
+    try {
+      const runRes = await fetch(
+        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
+      );
+      const runState = await archonResponseJson<RunState>(runRes, "GET /api/runs/:id");
+      if (runState.status === "success" || runState.status === "failed") return;
+    } catch { /* continue */ }
+  }
+}
+
+// ─── Unified harness message handler ────────────────────────────────────────
+
+async function handleHarnessMessage(
   prompt: string,
   channel: string,
   thread_ts: string,
   client: any,
   logger: any,
-  surface: "mention" | "dm",
-  existingRepoId?: string | null
+  surface: "slash" | "mention" | "dm",
+  repoIdHint?: string | null
 ): Promise<void> {
   const messages = await fetchThreadMessages(channel, thread_ts, client);
   const threadContext = buildGenericThreadContext(messages);
 
-  let reply: SmartReplyResult;
+  let route: HarnessRouteResult;
   try {
-    reply = await callSmartReply(prompt, threadContext, existingRepoId ?? null, surface);
+    route = await callHarnessRoute(prompt, threadContext, repoIdHint ?? null, surface);
   } catch (err: any) {
-    logger.error(`smart-reply call failed: ${err.message}`);
+    logger.error(`harness/route call failed: ${err.message}`);
     await client.chat.postMessage({
       channel,
       thread_ts,
@@ -1503,45 +1699,106 @@ async function handleSmartReply(
     return;
   }
 
-  if (reply.type === "answer") {
+  if (route.type === "answer") {
     await client.chat.postMessage({
       channel,
       thread_ts,
-      text: reply.answer ?? "I don't have an answer for that right now.",
+      text: route.answer ?? "I don't have an answer for that right now.",
     });
     return;
   }
 
-  if (reply.type === "clarify") {
+  if (route.type === "clarify") {
     await client.chat.postMessage({
       channel,
       thread_ts,
-      text: reply.question ?? "Could you provide more details?",
+      text: route.question ?? "Could you provide more details?",
     });
     return;
   }
 
-  // type === "workflow"
-  const repoId = reply.repoId;
-  const workflow = reply.workflow ?? DEFAULT_WORKFLOW;
-  const inputs = reply.inputs ?? {};
+  // type === "proposal" — always show confirm buttons
+  const repoId = route.repoId;
+  const workflow = route.workflow ?? DEFAULT_WORKFLOW;
+  const inputs = route.inputs ?? {};
+  const alternatives = route.alternatives ?? [];
 
   if (!repoId) {
     await client.chat.postMessage({
       channel,
       thread_ts,
-      text: reply.question ?? "Which repository should I work with? " + (await noRepoErrorText("@ArchonBot")),
+      text: route.question ?? "Which repository should I work with? " + (await noRepoErrorText("@ArchonBot")),
     });
     return;
   }
 
+  const proposalId = storeProposal({
+    repoId,
+    workflow,
+    inputs,
+    alternatives,
+    prompt,
+    confidence: route.confidence,
+    reason: route.reason,
+    channel,
+    threadTs: thread_ts,
+  });
+
+  await client.chat.postMessage({
+    channel,
+    thread_ts,
+    blocks: proposalBlocks(proposalId, proposalStore.get(proposalId)!),
+    text: `Harness proposes running \`${workflow}\` on \`${repoId}\`. Click Run to proceed.`,
+  });
+}
+
+// ─── Button action: Run ─────────────────────────────────────────────────────
+app.action("harness_run", async ({ action, ack, body, client, logger }) => {
+  await ack();
+  const proposalId = (action as any).value;
+  const p = proposalStore.get(proposalId);
+  if (!p) {
+    await client.chat.postMessage({
+      channel: (body as any).channel?.id,
+      text: "This proposal has expired. Please re-send your request.",
+    });
+    return;
+  }
+
+  const messageTs = (body as any).message?.ts;
+  const channel = (body as any).channel?.id;
+  const thread_ts = p.threadTs;
+
+  if (messageTs && channel) {
+    await client.chat.update({
+      channel,
+      ts: messageTs,
+      text: `Running \`${p.workflow}\` on \`${p.repoId}\`...`,
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `_Running \`${p.workflow}\` on \`${p.repoId}\`..._`,
+          },
+        },
+      ],
+    }).catch(() => {});
+  }
+
+  const slackUser = (body as any).user?.id;
   try {
-    const result = await triggerWorkflow(repoId, workflow, prompt, inputs);
+    const result = await callHarnessExecute(p.repoId, p.workflow, p.inputs, p.prompt, {
+      slackUser, channel, surface: "slack",
+    });
     if (result.error) {
+      const missingMsg = result.missing?.length
+        ? `\n_Missing inputs: ${result.missing.map((m: string) => `\`${m}\``).join(", ")}_`
+        : "";
       await client.chat.postMessage({
         channel,
         thread_ts,
-        text: `Failed to start workflow: ${result.error}`,
+        text: `Failed to start workflow: ${result.error}${missingMsg}`,
       });
       return;
     }
@@ -1549,22 +1806,217 @@ async function handleSmartReply(
     await client.chat.postMessage({
       channel,
       thread_ts,
-      blocks: successBlocks({ repoId, workflow, prompt, runId }),
-      text: `Archon run ${runId} started for ${repoId}/${workflow}`,
+      blocks: successBlocks({ repoId: p.repoId, workflow: p.workflow, prompt: p.prompt, runId }),
+      text: `Archon run ${runId} started for ${p.repoId}/${p.workflow}`,
     });
 
-    pollRunAndPostResult(runId, repoId, channel, thread_ts, client, logger).catch(
-      (err) => logger.error("pollRunAndPostResult error:", err)
+    saveHarnessThread({
+      channel,
+      threadTs: thread_ts,
+      repoId: p.repoId,
+      lastRunId: runId,
+      lastWorkflow: p.workflow,
+      history: [p.prompt],
+    });
+
+    pollRunAndPostResult(runId, p.repoId, channel, thread_ts, client, logger).catch(
+      (err) => logger.error("pollRunAndPostResult (harness_run) error:", err)
+    );
+    pollRunEvents(runId, p.repoId, channel, thread_ts, client, logger).catch(
+      (err) => logger.error("pollRunEvents (harness_run) error:", err)
     );
   } catch (err: any) {
-    logger.error(err);
     await client.chat.postMessage({
       channel,
       thread_ts,
       text: `Error connecting to Archon server: ${err.message}`,
     });
   }
-}
+  proposalStore.delete(proposalId);
+});
+
+// ─── Button action: Pick another ────────────────────────────────────────────
+app.action("harness_pick", async ({ action, ack, body, client, logger }) => {
+  await ack();
+  const raw = (action as any).selected_option?.value ?? "";
+  const sepIdx = raw.indexOf(":");
+  if (sepIdx === -1) return;
+  const proposalId = raw.slice(0, sepIdx);
+  const newWorkflow = raw.slice(sepIdx + 1);
+
+  const p = proposalStore.get(proposalId);
+  if (!p) {
+    await client.chat.postMessage({
+      channel: (body as any).channel?.id,
+      text: "This proposal has expired. Please re-send your request.",
+    });
+    return;
+  }
+
+  p.workflow = newWorkflow;
+  p.alternatives = p.alternatives.filter((a) => a !== newWorkflow);
+  const channel = (body as any).channel?.id;
+  const messageTs = (body as any).message?.ts;
+
+  if (messageTs && channel) {
+    await client.chat.update({
+      channel,
+      ts: messageTs,
+      text: `Running \`${newWorkflow}\` on \`${p.repoId}\`...`,
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `_Running \`${newWorkflow}\` on \`${p.repoId}\`..._`,
+          },
+        },
+      ],
+    }).catch(() => {});
+  }
+
+  const slackUser = (body as any).user?.id;
+  try {
+    const result = await callHarnessExecute(p.repoId, newWorkflow, p.inputs, p.prompt, {
+      slackUser, channel, surface: "slack",
+    });
+    if (result.error) {
+      const missingMsg = result.missing?.length
+        ? `\n_Missing inputs: ${result.missing.map((m: string) => `\`${m}\``).join(", ")}_`
+        : "";
+      await client.chat.postMessage({
+        channel,
+        thread_ts: p.threadTs,
+        text: `Failed to start workflow: ${result.error}${missingMsg}`,
+      });
+      return;
+    }
+    const runId = result.runId ?? "";
+    await client.chat.postMessage({
+      channel,
+      thread_ts: p.threadTs,
+      blocks: successBlocks({ repoId: p.repoId, workflow: newWorkflow, prompt: p.prompt, runId }),
+      text: `Archon run ${runId} started for ${p.repoId}/${newWorkflow}`,
+    });
+
+    saveHarnessThread({
+      channel,
+      threadTs: p.threadTs,
+      repoId: p.repoId,
+      lastRunId: runId,
+      lastWorkflow: newWorkflow,
+      history: [p.prompt],
+    });
+
+    pollRunAndPostResult(runId, p.repoId, channel, p.threadTs, client, logger).catch(
+      (err) => logger.error("pollRunAndPostResult (harness_pick) error:", err)
+    );
+    pollRunEvents(runId, p.repoId, channel, p.threadTs, client, logger).catch(
+      (err) => logger.error("pollRunEvents (harness_pick) error:", err)
+    );
+  } catch (err: any) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts: p.threadTs,
+      text: `Error connecting to Archon server: ${err.message}`,
+    });
+  }
+  proposalStore.delete(proposalId);
+});
+
+// ─── Button action: Cancel ──────────────────────────────────────────────────
+app.action("harness_cancel", async ({ action, ack, body, client }) => {
+  await ack();
+  const proposalId = (action as any).value;
+  proposalStore.delete(proposalId);
+  const channel = (body as any).channel?.id;
+  const messageTs = (body as any).message?.ts;
+  if (messageTs && channel) {
+    await client.chat.update({
+      channel,
+      ts: messageTs,
+      text: "Cancelled.",
+      blocks: [
+        {
+          type: "section",
+          text: { type: "mrkdwn", text: "_Cancelled._" },
+        },
+      ],
+    }).catch(() => {});
+  }
+});
+
+// ─── Button action: Approve (mid-run approval gate) ─────────────────────────
+app.action("approval_approve", async ({ action, ack, body, client, logger }) => {
+  await ack();
+  const raw = (action as any).value ?? "";
+  const [runId, repoId] = raw.split(":");
+  if (!runId || !repoId) return;
+
+  const slackUser = (body as any).user?.id ?? "unknown";
+  const channel = (body as any).channel?.id;
+  const messageTs = (body as any).message?.ts;
+
+  try {
+    const res = await fetch(`${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ by: slackUser }),
+    });
+    const data = await archonResponseJson<{ approved?: boolean; error?: string }>(res, "POST /api/runs/:id/approve");
+    if (data.error) {
+      await client.chat.postMessage({ channel, text: `Approve failed: ${data.error}` });
+      return;
+    }
+    if (messageTs && channel) {
+      await client.chat.update({
+        channel,
+        ts: messageTs,
+        text: `_Approved by <@${slackUser}>._`,
+        blocks: [{ type: "section", text: { type: "mrkdwn", text: `_Approved by <@${slackUser}>. Workflow continuing..._` } }],
+      }).catch(() => {});
+    }
+  } catch (err: any) {
+    logger.error("approval_approve error:", err);
+    if (channel) await client.chat.postMessage({ channel, text: `Error: ${err.message}` });
+  }
+});
+
+// ─── Button action: Reject (mid-run approval gate) ──────────────────────────
+app.action("approval_reject", async ({ action, ack, body, client, logger }) => {
+  await ack();
+  const raw = (action as any).value ?? "";
+  const [runId, repoId] = raw.split(":");
+  if (!runId || !repoId) return;
+
+  const slackUser = (body as any).user?.id ?? "unknown";
+  const channel = (body as any).channel?.id;
+  const messageTs = (body as any).message?.ts;
+
+  try {
+    const res = await fetch(`${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}/reject`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ by: slackUser }),
+    });
+    const data = await archonResponseJson<{ rejected?: boolean; error?: string }>(res, "POST /api/runs/:id/reject");
+    if (data.error) {
+      await client.chat.postMessage({ channel, text: `Reject failed: ${data.error}` });
+      return;
+    }
+    if (messageTs && channel) {
+      await client.chat.update({
+        channel,
+        ts: messageTs,
+        text: `_Rejected by <@${slackUser}>. Workflow stopped._`,
+        blocks: [{ type: "section", text: { type: "mrkdwn", text: `_Rejected by <@${slackUser}>. Workflow stopped._` } }],
+      }).catch(() => {});
+    }
+  } catch (err: any) {
+    logger.error("approval_reject error:", err);
+    if (channel) await client.chat.postMessage({ channel, text: `Error: ${err.message}` });
+  }
+});
 
 // ─── Harness thread follow-up ───────────────────────────────────────────────
 async function handleHarnessFollowUp(
@@ -1581,62 +2033,9 @@ async function handleHarnessFollowUp(
     text: `_Routing follow-up..._`,
   });
 
-  const messages = await fetchThreadMessages(channel, thread_ts, client);
-  const threadContext = buildGenericThreadContext(messages);
-
-  const fullPrompt = threadContext
-    ? `${threadContext}\n\nNew follow-up request:\n${newPrompt}`
-    : newPrompt;
-
-  try {
-    const route = await routeIntent(fullPrompt, ctx.repoId);
-    const repoId = route.repoId ?? ctx.repoId;
-
-    const result = await triggerWorkflow(
-      repoId,
-      route.workflow,
-      fullPrompt,
-      route.inputs
-    );
-
-    if (result.error) {
-      await client.chat.postMessage({
-        channel,
-        thread_ts,
-        text: `Failed to start follow-up workflow: ${result.error}`,
-      });
-      return;
-    }
-
-    const runId = result.runId ?? "";
-    const fallbackNote = route.fallback ? " _(fallback)_" : "";
-
-    await client.chat.postMessage({
-      channel,
-      thread_ts,
-      text: [
-        `*Follow-up routed to \`${route.workflow}\`*${fallbackNote}`,
-        `Reason: ${route.reason}`,
-        `Run ID: \`${runId}\``,
-        `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
-      ].join("\n"),
-    });
-
-    ctx.lastRunId = runId;
-    ctx.lastWorkflow = route.workflow;
-    ctx.history.push(newPrompt);
-    saveHarnessThread(ctx);
-
-    pollRunAndPostResult(runId, repoId, channel, thread_ts, client, logger).catch(
-      (err) => logger.error("pollRunAndPostResult (harness follow-up) error:", err)
-    );
-  } catch (err: any) {
-    await client.chat.postMessage({
-      channel,
-      thread_ts,
-      text: `Error connecting to Archon server: ${err.message}`,
-    });
-  }
+  handleHarnessMessage(newPrompt, channel, thread_ts, client, logger, "mention", ctx.repoId).catch(
+    (err) => logger.error("handleHarnessMessage (follow-up) error:", err)
+  );
 }
 
 // ─── @mentions ─────────────────────────────────────────────────────────────
@@ -1678,10 +2077,10 @@ app.event("app_mention", async ({ event, client, logger }) => {
     }
   }
 
-  // Smart handler: answer, clarify, or trigger workflow via LLM
+  // Unified harness handler: answer, clarify, or propose workflow with confirm buttons
   const prompt = stripped || "help";
-  handleSmartReply(prompt, channel, thread_ts, client, logger, "mention").catch(
-    (err) => logger.error("handleSmartReply (mention) error:", err)
+  handleHarnessMessage(prompt, channel, thread_ts, client, logger, "mention").catch(
+    (err) => logger.error("handleHarnessMessage (mention) error:", err)
   );
 });
 
@@ -1851,7 +2250,7 @@ app.message(async ({ message, client, logger }) => {
 });
 
 // ─── Direct messages ───────────────────────────────────────────────────────
-// Users can DM the bot without a mention. Smart handler answers everything.
+// Users can DM the bot without a mention. Unified harness handler answers everything.
 app.message(async ({ message, client, logger }) => {
   const m = message as any;
   if (m.channel_type !== "im") return;
@@ -1862,8 +2261,8 @@ app.message(async ({ message, client, logger }) => {
   if (!stripped) return;
 
   const thread_ts = m.thread_ts ?? m.ts;
-  handleSmartReply(stripped, m.channel, thread_ts, client, logger, "dm").catch(
-    (err) => logger.error("handleSmartReply (dm) error:", err)
+  handleHarnessMessage(stripped, m.channel, thread_ts, client, logger, "dm").catch(
+    (err) => logger.error("handleHarnessMessage (dm) error:", err)
   );
 });
 

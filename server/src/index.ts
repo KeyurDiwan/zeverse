@@ -11,6 +11,7 @@ import { repoRoutes } from "./routes/repos";
 import { inferRoutes } from "./routes/infer";
 import { routeIntentRoutes } from "./routes/route-intent";
 import { smartReplyRoutes } from "./routes/smart-reply";
+import { harnessRoutes } from "./routes/harness";
 
 const app = express();
 const PORT = parseInt(process.env.ARCHON_SERVER_PORT ?? "3100", 10);
@@ -24,6 +25,7 @@ app.use("/api", runRoutes);
 app.use("/api", inferRoutes);
 app.use("/api", routeIntentRoutes);
 app.use("/api", smartReplyRoutes);
+app.use("/api", harnessRoutes);
 
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });

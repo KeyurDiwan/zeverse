@@ -25,7 +25,9 @@ export interface WorkflowStep {
     | "gdoc-suggest"
     | "fr-fetch"
     | "fr-create"
-    | "fr-comment";
+    | "fr-comment"
+    | "workflow"
+    | "approval";
   prompt?: string;
   command?: string;
   cwd?: string;
@@ -72,8 +74,28 @@ export interface WorkflowStep {
   workspace?: string;
   /** For `fr-fetch` / `fr-comment`: Freshrelease task URL (supports templates). */
   frUrl?: string;
+  /** For `workflow` steps: step id whose JSON output provides `{workflow, inputs}`. */
+  workflowFrom?: string;
+  /** For `workflow` steps: step id whose JSON output provides child inputs (if separate from workflowFrom). */
+  inputsFrom?: string;
+  /** For `workflow` steps: literal child workflow name (used when workflowFrom is absent). */
+  childWorkflow?: string;
   /** Optional condition — step is skipped when the rendered value is falsy. */
   when?: string;
+
+  /** Number of retry attempts on failure (0 = no retries). */
+  retries?: number;
+  /** Base backoff delay in ms between retries (doubles each attempt). */
+  retryBackoffMs?: number;
+  /** Template expression; step re-runs until this renders truthy (or maxIterations). */
+  loopUntil?: string;
+  /** Max iterations for loopUntil (default 10). */
+  maxIterations?: number;
+
+  /** For `approval` steps: which surface(s) to show the gate on. */
+  surface?: "slack" | "ui" | "both";
+  /** For `approval` steps: how long to wait before auto-rejecting (ms). */
+  approvalTimeoutMs?: number;
 }
 
 export interface Workflow {
@@ -81,6 +103,12 @@ export interface Workflow {
   description: string;
   inputs: WorkflowInput[];
   steps: WorkflowStep[];
+  /** Run isolation strategy. "branch" (default) creates a per-run git branch. */
+  isolation?: "branch" | "none";
+  /** Step ids that must be "success" for the run to succeed. Checked after all steps finish. */
+  gates?: string[];
+  /** When gates fail, optionally dispatch this child workflow to attempt a fix. */
+  onGateFail?: { childWorkflow: string };
   _filename: string;
   _repoId: string;
 }
@@ -114,4 +142,69 @@ export function loadWorkflows(repo: Repo): Workflow[] {
 
 export function findWorkflow(repo: Repo, name: string): Workflow | undefined {
   return loadWorkflows(repo).find((w) => w.name === name);
+}
+
+const MAX_SINGLE_FILE = 4000;
+const MAX_TOTAL_RULES = 8000;
+
+function readRuleFiles(dir: string, ext: string): { name: string; content: string }[] {
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.endsWith(ext))
+    .sort()
+    .map((f) => {
+      try {
+        let content = fs.readFileSync(path.join(dir, f), "utf-8").trim();
+        if (content.length > MAX_SINGLE_FILE) {
+          content = content.slice(0, MAX_SINGLE_FILE) + "\n...(truncated)";
+        }
+        return { name: f, content };
+      } catch {
+        return { name: f, content: "" };
+      }
+    })
+    .filter((r) => r.content.length > 0);
+}
+
+/**
+ * Load repo-specific rules/skills from:
+ *   1. .archon/rules/*.md
+ *   2. .cursorrules (single file)
+ *   3. .cursor/rules/*.md
+ * Returns concatenated text with section headers, capped at MAX_TOTAL_RULES chars.
+ */
+export function loadRepoRules(repo: Repo): string {
+  const parts: string[] = [];
+
+  for (const rule of readRuleFiles(path.join(repo.path, ".archon", "rules"), ".md")) {
+    parts.push(`--- rules: .archon/rules/${rule.name} ---\n${rule.content}`);
+  }
+
+  const cursorrules = path.join(repo.path, ".cursorrules");
+  if (fs.existsSync(cursorrules)) {
+    try {
+      let content = fs.readFileSync(cursorrules, "utf-8").trim();
+      if (content.length > MAX_SINGLE_FILE) {
+        content = content.slice(0, MAX_SINGLE_FILE) + "\n...(truncated)";
+      }
+      if (content) {
+        parts.push(`--- rules: .cursorrules ---\n${content}`);
+      }
+    } catch {
+      // skip unreadable
+    }
+  }
+
+  for (const rule of readRuleFiles(path.join(repo.path, ".cursor", "rules"), ".md")) {
+    parts.push(`--- rules: .cursor/rules/${rule.name} ---\n${rule.content}`);
+  }
+
+  if (parts.length === 0) return "";
+
+  let combined = parts.join("\n\n");
+  if (combined.length > MAX_TOTAL_RULES) {
+    combined = combined.slice(0, MAX_TOTAL_RULES) + "\n...(truncated)";
+  }
+  return combined;
 }

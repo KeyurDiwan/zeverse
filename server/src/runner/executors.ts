@@ -3,7 +3,9 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import type { LLMProvider } from "../llm";
-import type { WorkflowStep } from "../workflows";
+import type { ArchonConfig } from "../config";
+import type { WorkflowStep, Workflow } from "../workflows";
+import { findWorkflow } from "../workflows";
 import type { Repo } from "../repos";
 import { renderTemplate, TemplateContext } from "./template";
 import { appendLog } from "./state";
@@ -639,4 +641,135 @@ export async function executeEditStep(
     throw new Error(`No edits applied:\n${body}`);
   }
   return output;
+}
+
+/**
+ * Extract child workflow name + inputs from a step's JSON output or from
+ * literal step properties (childWorkflow / inputs).
+ */
+function resolveChildWorkflow(
+  step: WorkflowStep,
+  ctx: TemplateContext
+): { workflowName: string; childInputs: Record<string, string> } {
+  let workflowName: string | undefined;
+  let childInputs: Record<string, string> = {};
+
+  if (step.workflowFrom) {
+    const raw = ctx.steps[step.workflowFrom]?.output ?? "";
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        workflowName = parsed.workflow;
+        if (typeof parsed.inputs === "object" && parsed.inputs) {
+          childInputs = parsed.inputs;
+        }
+      } catch {
+        // fall through to childWorkflow / inputsFrom
+      }
+    }
+  }
+
+  if (step.inputsFrom && step.inputsFrom !== step.workflowFrom) {
+    const raw = ctx.steps[step.inputsFrom]?.output ?? "";
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (typeof parsed.inputs === "object" && parsed.inputs) {
+          childInputs = { ...childInputs, ...parsed.inputs };
+        } else if (typeof parsed === "object") {
+          childInputs = { ...childInputs, ...parsed };
+        }
+      } catch {
+        // ignore parse failures
+      }
+    }
+  }
+
+  if (!workflowName && step.childWorkflow) {
+    workflowName = renderTemplate(step.childWorkflow, ctx);
+  }
+
+  if (!workflowName && ctx.inputs.chosenWorkflow) {
+    workflowName = ctx.inputs.chosenWorkflow;
+  }
+
+  if (!workflowName) {
+    throw new Error(
+      `[${step.id}] Could not determine child workflow name from workflowFrom, childWorkflow, or inputs.chosenWorkflow`
+    );
+  }
+
+  return { workflowName, childInputs };
+}
+
+/**
+ * Dispatch a child workflow. Runs it via `startRun`, polls until terminal,
+ * and streams child logs into the parent log.
+ */
+export async function executeWorkflowStep(
+  step: WorkflowStep,
+  ctx: TemplateContext,
+  repo: Repo,
+  repoId: string,
+  runId: string,
+  config: ArchonConfig,
+  startRunFn: (
+    repo: Repo,
+    workflow: Workflow,
+    prompt: string,
+    inputs: Record<string, string>,
+    config: ArchonConfig
+  ) => Promise<string>,
+  getRunStateFn: (childRunId: string) => { status: string; steps: Array<{ id: string; status: string; output: string }> } | undefined
+): Promise<string> {
+  const { workflowName, childInputs } = resolveChildWorkflow(step, ctx);
+
+  const childWorkflow = findWorkflow(repo, workflowName);
+  if (!childWorkflow) {
+    throw new Error(
+      `[${step.id}] Child workflow "${workflowName}" not found in repo "${repo.id}"`
+    );
+  }
+
+  const prompt = childInputs.requirement ?? ctx.inputs.requirement ?? "";
+  const mergedInputs = { ...childInputs, requirement: prompt };
+
+  appendLog(
+    repoId,
+    runId,
+    `[${step.id}] Dispatching child workflow "${workflowName}" (repo: ${repo.id})`
+  );
+
+  const childRunId = await startRunFn(repo, childWorkflow, prompt, mergedInputs, config);
+  appendLog(repoId, runId, `[${step.id}] Child run started: ${childRunId}`);
+
+  const POLL_INTERVAL = 3000;
+  const MAX_POLLS = Math.ceil((config.runner.timeout_ms * 2) / POLL_INTERVAL);
+
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+    const childState = getRunStateFn(childRunId);
+    if (!childState) continue;
+    if (childState.status === "success" || childState.status === "failed") {
+      const stepSummaries = childState.steps
+        .map((s) => `  ${s.id} [${s.status}]: ${(s.output || "").slice(0, 500)}`)
+        .join("\n");
+
+      const summary = [
+        `Child workflow "${workflowName}" ${childState.status}.`,
+        `Child run ID: ${childRunId}`,
+        `Steps:`,
+        stepSummaries,
+      ].join("\n");
+
+      appendLog(repoId, runId, `[${step.id}] ${summary.split("\n")[0]}`);
+      return summary;
+    }
+  }
+
+  throw new Error(
+    `[${step.id}] Child workflow "${workflowName}" (run ${childRunId}) did not complete within timeout`
+  );
 }

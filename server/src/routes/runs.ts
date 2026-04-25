@@ -3,8 +3,8 @@ import { loadConfig } from "../config";
 import { findWorkflow } from "../workflows";
 import type { WorkflowInput } from "../workflows";
 import { requireRepo } from "../repos";
-import { startRun, getActiveRun } from "../runner";
-import { findStateByRunId, loadState, readLog } from "../runner/state";
+import { startRun, getActiveRun, resolveApproval, rejectApproval } from "../runner";
+import { findStateByRunId, loadState, readLog, readEvents, appendEvent } from "../runner/state";
 import { extractDocId, replyToComment, addComment, suggestEdits } from "../integrations/gdocs";
 
 export const runRoutes = Router();
@@ -108,6 +108,54 @@ runRoutes.get("/logs/:id", (req: Request<{ id: string }>, res: Response) => {
 
   const { content, nextOffset } = readLog(repoId, id, offset);
   res.json({ content, nextOffset });
+});
+
+runRoutes.get("/runs/:id/events", (req: Request<{ id: string }>, res: Response) => {
+  const { id } = req.params;
+  const offset = parseInt(String(req.query.offset ?? "0"), 10);
+  let repoId = req.query.repoId ? String(req.query.repoId) : undefined;
+
+  if (!repoId) {
+    const state = getActiveRun(id) ?? findStateByRunId(id);
+    repoId = state?.repoId;
+  }
+  if (!repoId) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
+
+  const { content, nextOffset } = readEvents(repoId, id, offset);
+  res.json({ content, nextOffset });
+});
+
+runRoutes.post("/runs/:id/approve", async (req: Request<{ id: string }>, res: Response) => {
+  const { id } = req.params;
+  const { by, comment } = req.body ?? {};
+  if (!by) {
+    res.status(400).json({ error: "by is required" });
+    return;
+  }
+  const ok = resolveApproval(id, by, comment);
+  if (!ok) {
+    res.status(404).json({ error: "No pending approval for this run" });
+    return;
+  }
+  res.json({ approved: true, by, runId: id });
+});
+
+runRoutes.post("/runs/:id/reject", async (req: Request<{ id: string }>, res: Response) => {
+  const { id } = req.params;
+  const { by, reason } = req.body ?? {};
+  if (!by) {
+    res.status(400).json({ error: "by is required" });
+    return;
+  }
+  const ok = rejectApproval(id, by, reason);
+  if (!ok) {
+    res.status(404).json({ error: "No pending approval for this run" });
+    return;
+  }
+  res.json({ rejected: true, by, runId: id });
 });
 
 runRoutes.post("/gdoc-reply", async (req: Request, res: Response) => {

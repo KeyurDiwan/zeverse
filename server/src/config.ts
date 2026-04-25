@@ -2,6 +2,12 @@ import fs from "fs";
 import path from "path";
 import YAML from "yaml";
 
+export interface PolicyConfig {
+  allowed_repos: string[];
+  allowed_workflows: string[];
+  allowed_slack_channels: string[];
+}
+
 export interface ArchonConfig {
   llm: {
     provider: string;
@@ -13,12 +19,14 @@ export interface ArchonConfig {
   };
   runner: {
     timeout_ms: number;
+    milestone_steps?: string[];
   };
   paths: {
     repos_file: string;
     state_dir: string;
     clone_dir: string;
   };
+  policy?: PolicyConfig;
 }
 
 function resolveEnvVars(value: string): string {
