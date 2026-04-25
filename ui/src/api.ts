@@ -74,6 +74,18 @@ export async function fetchWorkflows(repoId: string): Promise<WorkflowSummary[]>
   return data.workflows;
 }
 
+export async function fetchInferWorkflow(
+  repoId: string,
+  prompt: string
+): Promise<{ workflow: string; keywordMatch: string | null }> {
+  const res = await fetch(`${BASE}/infer-workflow`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repoId, prompt }),
+  });
+  return json<{ workflow: string; keywordMatch: string | null }>(res);
+}
+
 export async function triggerRun(
   repoId: string,
   workflow: string,

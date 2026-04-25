@@ -1,12 +1,45 @@
 import { Router, Request, Response } from "express";
 import { loadConfig } from "../config";
 import { findWorkflow } from "../workflows";
+import type { WorkflowInput } from "../workflows";
 import { requireRepo } from "../repos";
 import { startRun, getActiveRun } from "../runner";
 import { findStateByRunId, loadState, readLog } from "../runner/state";
 import { extractDocId, replyToComment, addComment, suggestEdits } from "../integrations/gdocs";
 
 export const runRoutes = Router();
+
+// Regex-based extractors for known workflow input ids. Applied only when the
+// workflow declares the input and the caller didn't already set it. Keeps the
+// Slack / harness / UI / curl paths in sync for common shapes like Freshrelease
+// task URLs, GitHub PR URLs, and Google Doc URLs.
+const INPUT_EXTRACTORS: Record<string, (text: string) => string | undefined> = {
+  frUrl: (t) =>
+    t.match(/https?:\/\/[^\s]+freshrelease\.com\/ws\/[^/\s]+\/tasks\/[^\s)<>]+/i)?.[0] ??
+    t.match(/\b[A-Z][A-Z0-9]+-\d+\b/)?.[0],
+  docUrl: (t) => t.match(/https?:\/\/docs\.google\.com\/document\/[^\s)<>]+/i)?.[0],
+  pr: (t) =>
+    t.match(/https?:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+[^\s)<>]*/i)?.[0] ??
+    t.match(/(?:^|\s)#(\d+)(?:\s|$)/)?.[1],
+};
+
+function autofillInputs(
+  declared: WorkflowInput[],
+  current: Record<string, string>,
+  prompt: string
+): Record<string, string> {
+  if (!prompt) return current;
+  const next = { ...current };
+  for (const def of declared) {
+    const already = (next[def.id] ?? "").trim();
+    if (already) continue;
+    const extractor = INPUT_EXTRACTORS[def.id];
+    if (!extractor) continue;
+    const value = extractor(prompt);
+    if (value) next[def.id] = value;
+  }
+  return next;
+}
 
 runRoutes.post("/run-workflow", async (req: Request, res: Response) => {
   try {
@@ -31,10 +64,11 @@ runRoutes.post("/run-workflow", async (req: Request, res: Response) => {
     }
 
     const config = loadConfig();
-    const mergedInputs: Record<string, string> = {
+    const baseInputs: Record<string, string> = {
       ...(inputs ?? {}),
       requirement: inputs?.requirement ?? prompt ?? "",
     };
+    const mergedInputs = autofillInputs(workflow.inputs, baseInputs, prompt ?? "");
 
     const runId = await startRun(repo, workflow, prompt ?? "", mergedInputs, config);
     res.json({ runId, repoId: repo.id });

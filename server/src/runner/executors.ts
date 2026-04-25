@@ -526,10 +526,24 @@ export async function executeEditStep(
   let applied = 0;
   // Cache file contents so multiple edits to the same file compose correctly.
   const fileCache = new Map<string, { content: string; existed: boolean }>();
+  // Only flush files that had at least one successful op applied.
+  const dirtyFiles = new Set<string>();
 
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i];
     const label = `#${i + 1} ${op.path} (${op.mode})`;
+
+    // Reject empty SEARCH blocks before touching the filesystem.
+    if (op.mode === "search-replace") {
+      const needle = op.search ?? "";
+      if (!needle) {
+        const line = `FAIL ${label}: empty SEARCH block`;
+        appendLog(repo.id, runId, `[${step.id}] ${line}`);
+        results.push(line);
+        continue;
+      }
+    }
+
     const safe = resolveSafeRepoPath(repo.path, op.path);
     if (!safe.ok) {
       const line = `SKIP ${label}: ${safe.reason}`;
@@ -558,6 +572,7 @@ export async function executeEditStep(
       cached.content = op.replace.endsWith("\n")
         ? op.replace
         : op.replace + "\n";
+      dirtyFiles.add(safe.full);
       const line = `apply ${label} (${Buffer.byteLength(cached.content, "utf8")} bytes)`;
       appendLog(repo.id, runId, `[${step.id}] ${line}`);
       results.push(line);
@@ -566,13 +581,7 @@ export async function executeEditStep(
     }
 
     // search-replace
-    const needle = op.search ?? "";
-    if (!needle) {
-      const line = `FAIL ${label}: empty SEARCH block`;
-      appendLog(repo.id, runId, `[${step.id}] ${line}`);
-      results.push(line);
-      continue;
-    }
+    const needle = op.search!;
 
     const idx = cached.content.indexOf(needle);
     if (idx === -1) {
@@ -608,19 +617,21 @@ export async function executeEditStep(
 
     cached.content =
       cached.content.slice(0, idx) + op.replace + cached.content.slice(idx + needle.length);
+    dirtyFiles.add(safe.full);
     const line = `apply ${label}`;
     appendLog(repo.id, runId, `[${step.id}] ${line}`);
     results.push(line);
     applied++;
   }
 
-  // Flush cached buffers to disk.
+  // Only flush files that had at least one successful op — never create empty stubs.
   for (const [full, cached] of fileCache) {
+    if (!dirtyFiles.has(full)) continue;
     fs.mkdirSync(path.dirname(full), { recursive: true });
     fs.writeFileSync(full, cached.content, "utf8");
   }
 
-  const header = `Applied ${applied}/${ops.length} edit op(s) across ${fileCache.size} file(s) in ${repo.path}:`;
+  const header = `Applied ${applied}/${ops.length} edit op(s) across ${dirtyFiles.size} file(s) in ${repo.path}:`;
   const body = results.join("\n");
   const output = `${header}\n${body}\n`;
 

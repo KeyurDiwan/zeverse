@@ -2,7 +2,8 @@ import dotenv from "dotenv";
 import path from "path";
 import fs from "fs";
 
-dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+// override: so repo .env wins over a stray shell ARCHON_SERVER_URL (e.g. Vite 5173).
+dotenv.config({ path: path.resolve(__dirname, "../../.env"), override: true });
 
 import { App, LogLevel } from "@slack/bolt";
 
@@ -11,6 +12,80 @@ const ARCHON_UI_URL = process.env.ARCHON_UI_URL ?? "http://localhost:5173";
 const DEFAULT_REPO_ID = process.env.ARCHON_DEFAULT_REPO_ID ?? "";
 const DEFAULT_WORKFLOW = process.env.ARCHON_DEFAULT_WORKFLOW ?? "dev";
 const HUB_STATE_DIR = path.resolve(__dirname, "../../state");
+
+/** Archon API returns JSON; HTML means wrong URL (UI/static host) or proxy misconfiguration. */
+async function archonResponseJson<T>(res: Response, what: string): Promise<T> {
+  const text = await res.text();
+  const t = text.trim();
+  if (t.startsWith("<!DOCTYPE") || t.startsWith("<!doctype") || t.startsWith("<html")) {
+    throw new Error(
+      `Archon server returned a web page instead of JSON (${what}, HTTP ${res.status}). ` +
+        `Set ARCHON_SERVER_URL in .env to the API (e.g. http://127.0.0.1:3100), not the Vite UI, and ensure the server is running.`
+    );
+  }
+  if (t.length > 0 && t[0] !== "{" && t[0] !== "[") {
+    const preview = t.length > 200 ? `${t.slice(0, 200)}…` : t;
+    throw new Error(
+      `Archon server did not return JSON (${what}, HTTP ${res.status}): ${preview}`
+    );
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (
+      msg.includes("Unexpected token") &&
+      (text.includes("<!DOCTYPE") || text.includes("<html") || text.trim().startsWith("<"))
+    ) {
+      throw new Error(
+        `Archon returned a web page, not JSON (${what}, HTTP ${res.status}). ` +
+          `Point ARCHON_SERVER_URL at the API (http://127.0.0.1:3100), not the Vite UI, ` +
+          `and unset a wrong value in the shell: env -u ARCHON_SERVER_URL npm run dev:slack`
+      );
+    }
+    throw new Error(
+      `Invalid JSON from Archon ${what} (HTTP ${res.status}): ${msg}`
+    );
+  }
+}
+
+function archonBaseUrl(): string {
+  return ARCHON_SERVER_URL.replace(/\/$/, "");
+}
+
+/** Warn at boot if the API URL looks wrong or returns HTML. */
+async function probeArchonOnStartup(): Promise<void> {
+  const base = archonBaseUrl();
+  if (/^https?:\/\/127\.0\.0\.1:5173|^https?:\/\/localhost:5173/.test(base)) {
+    console.warn(
+      "Archon: ARCHON_SERVER_URL is the Vite dev URL (5173). The bot needs the API on 3100. Set ARCHON_SERVER_URL=http://127.0.0.1:3100 in .env"
+    );
+  }
+  try {
+    const res = await fetch(`${base}/api/repos`);
+    const text = await res.text();
+    const t = text.trim();
+    if (t.startsWith("<!DOCTYPE") || t.startsWith("<!doctype") || t.startsWith("<html")) {
+      console.error(
+        "Archon: GET /api/repos returned HTML — ARCHON_SERVER_URL is wrong, or the shell is overriding .env. " +
+          "Use the API: http://127.0.0.1:3100. Test with: npm run check:archon"
+      );
+      return;
+    }
+    try {
+      JSON.parse(text);
+    } catch {
+      console.error(
+        `Archon: /api/repos body is not valid JSON (HTTP ${res.status}):`,
+        text.slice(0, 200)
+      );
+      return;
+    }
+    console.log(`Archon: API OK at ${base} (GET /api/repos → ${res.status})`);
+  } catch (e) {
+    console.error(`Archon: cannot reach ${base}:`, (e as Error).message);
+  }
+}
 
 // ─── PRD thread tracking ───────────────────────────────────────────────────
 interface PrdQueryInfo {
@@ -168,7 +243,7 @@ async function routeIntent(prompt: string, repoId?: string): Promise<RouteIntent
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return (await res.json()) as RouteIntentResult;
+  return archonResponseJson<RouteIntentResult>(res, "POST /api/route-intent");
 }
 
 const app = new App({
@@ -197,7 +272,7 @@ interface Repo {
 async function listRepoIds(): Promise<Set<string>> {
   try {
     const res = await fetch(`${ARCHON_SERVER_URL}/api/repos`);
-    const data = (await res.json()) as { repos: Repo[] };
+    const data = await archonResponseJson<{ repos: Repo[] }>(res, "GET /api/repos");
     return new Set(data.repos.map((r) => r.id));
   } catch {
     return new Set();
@@ -209,7 +284,10 @@ async function listWorkflowNames(repoId: string): Promise<Set<string>> {
     const res = await fetch(
       `${ARCHON_SERVER_URL}/api/workflows?repoId=${encodeURIComponent(repoId)}`
     );
-    const data = (await res.json()) as { workflows: { name: string }[] };
+    const data = await archonResponseJson<{ workflows: { name: string }[] }>(
+      res,
+      "GET /api/workflows"
+    );
     return new Set((data.workflows ?? []).map((w) => w.name));
   } catch {
     return new Set();
@@ -223,33 +301,36 @@ async function inferRepoIdFromPrompt(prompt: string): Promise<string | null> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt }),
     });
-    const data = (await res.json()) as { repoId: string | null; reason?: string };
+    const data = await archonResponseJson<{ repoId: string | null; reason?: string }>(
+      res,
+      "POST /api/infer-repo"
+    );
     return data.repoId ?? null;
   } catch {
     return null;
   }
 }
 
-const WORKFLOW_KEYWORDS: [RegExp, string][] = [
-  [/\b(fix|bug|broken|crash|error)\b/i, "fix-bug"],
-  [/\b(review|pr\b|pull\s*request)\b/i, "pr-review"],
-  [/\blint\b/i, "lint-fix"],
-  [/\btest(?:s|ing)?\b/i, "test"],
-  [/\b(explain|understand|walk\s*me\s*through|how\s*does)\b/i, "explain-codebase"],
-  [/\b(upgrade|bump)\b/i, "upgrade-dep"],
-  [/\bupdate\b.*\b(dep|dependency|package)\b/i, "upgrade-dep"],
-  [/\bprd\b|docs\.google\.com\/document/i, "prd-analysis"],
-];
-
-function inferWorkflowFromPrompt(prompt: string, available: Set<string>): string {
-  for (const [pattern, workflow] of WORKFLOW_KEYWORDS) {
-    if (!pattern.test(prompt)) continue;
-    if (available.has(workflow)) return workflow;
-    if (workflow === "pr-review" && available.has("pr-review-remote")) return "pr-review-remote";
+async function inferWorkflowFromServer(repoId: string, prompt: string): Promise<string> {
+  try {
+    const res = await fetch(`${ARCHON_SERVER_URL}/api/infer-workflow`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repoId, prompt }),
+    });
+    const data = await archonResponseJson<{ workflow?: string }>(res, "POST /api/infer-workflow");
+    if (typeof data.workflow === "string") return data.workflow;
+  } catch {
+    // fall through
   }
-  if (available.has(DEFAULT_WORKFLOW)) return DEFAULT_WORKFLOW;
-  const first = available.values().next().value;
-  return first ?? DEFAULT_WORKFLOW;
+  try {
+    const available = await listWorkflowNames(repoId);
+    if (available.has(DEFAULT_WORKFLOW)) return DEFAULT_WORKFLOW;
+    const first = available.values().next().value;
+    return first ?? DEFAULT_WORKFLOW;
+  } catch {
+    return DEFAULT_WORKFLOW;
+  }
 }
 
 interface RunResponse {
@@ -268,7 +349,7 @@ async function triggerWorkflow(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ repoId, workflow: workflowName, prompt, inputs }),
   });
-  return res.json() as Promise<RunResponse>;
+  return archonResponseJson<RunResponse>(res, "POST /api/run-workflow");
 }
 
 interface Invocation {
@@ -334,8 +415,7 @@ async function parseInvocation(rawText: string, opts: ParseOptions = {}): Promis
   if (opts.explicitWorkflow) {
     workflow = opts.explicitWorkflow;
   } else if (!workflow && repoId) {
-    const available = await listWorkflowNames(repoId);
-    workflow = inferWorkflowFromPrompt(prompt || text, available);
+    workflow = await inferWorkflowFromServer(repoId, prompt || text);
   }
 
   return {
@@ -369,8 +449,19 @@ async function noRepoErrorText(prefix: string): Promise<string> {
 interface RunState {
   runId: string;
   repoId: string;
+  workflow?: string;
   status: string;
   steps: { id: string; status: string; output: string; error?: string }[];
+}
+
+/** Markdown body under a `## Summary` heading (same rule as server `extractFrAnalysisSummarySection`). */
+function extractFrAnalysisSummaryForSlack(text: string): string | null {
+  const m = text.match(/^##\s*Summary\s*$/m);
+  if (m == null || m.index === undefined) return null;
+  const after = text.slice(m.index + m[0].length);
+  const next = after.search(/^##\s+\S/m);
+  const block = (next === -1 ? after : after.slice(0, next)).trim();
+  return block || null;
 }
 
 const SLACK_MAX_TEXT = 3900;
@@ -399,7 +490,7 @@ async function pollRunAndPostResult(
       const res = await fetch(
         `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
       );
-      state = (await res.json()) as RunState;
+      state = await archonResponseJson<RunState>(res, "GET /api/runs/:id");
     } catch {
       continue;
     }
@@ -446,10 +537,17 @@ async function pollRunAndPostResult(
       if (verdictMatch) parts.push(`*Review verdict:* ${verdictMatch[1].trim().slice(0, 200)}`);
     }
 
-    const lastStep = state.steps[state.steps.length - 1];
-    const lastOutput = lastStep?.output ?? "";
-    if (!diffStep?.output && !prStep?.output && !reviewStep?.output) {
-      parts.push(trimOutput(lastOutput));
+    const hasDiffPrReview =
+      !!(diffStep?.output || prStep?.output || reviewStep?.output);
+    if (!hasDiffPrReview) {
+      if (state.workflow === "fr-analyze") {
+        const analyse = state.steps.find((s) => s.id === "analyse");
+        parts.push(trimOutput(analyse?.output ?? ""));
+      } else {
+        const lastStep = state.steps[state.steps.length - 1];
+        const lastOutput = lastStep?.output ?? "";
+        parts.push(trimOutput(lastOutput));
+      }
     }
 
     parts.push("");
@@ -538,6 +636,7 @@ function registerCommand(commandName: string, workflowName: string) {
 }
 
 registerCommand("/archon-dev", "dev");
+registerCommand("/archon-fr-analyze", "fr-analyze");
 // ─── /archon-harness (smart router) ─────────────────────────────────────────
 app.command("/archon-harness", async ({ command, ack, respond, client, logger }) => {
   await ack();
@@ -850,7 +949,7 @@ async function pollRunAndReply(
       const res = await fetch(
         `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
       );
-      state = (await res.json()) as RunState;
+      state = await archonResponseJson<RunState>(res, "GET /api/runs/:id");
     } catch {
       continue;
     }
@@ -1103,7 +1202,10 @@ async function postGDocComment(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ docId, body }),
     });
-    return (await res.json()) as { commentId?: string; error?: string };
+    return await archonResponseJson<{ commentId?: string; error?: string }>(
+      res,
+      "POST /api/gdoc-comment"
+    );
   } catch (err: any) {
     return { error: err.message };
   }
@@ -1119,7 +1221,7 @@ async function postGDocSuggestEdits(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ docId, edits }),
     });
-    return (await res.json()) as any;
+    return await archonResponseJson<any>(res, "POST /api/gdoc-suggest");
   } catch (err: any) {
     return { error: err.message };
   }
@@ -1227,7 +1329,7 @@ async function pollThreadSync(
       const res = await fetch(
         `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(ctx.repoId)}`
       );
-      state = (await res.json()) as RunState;
+      state = await archonResponseJson<RunState>(res, "GET /api/runs/:id");
     } catch {
       continue;
     }
@@ -1314,6 +1416,156 @@ async function pollThreadSync(
   });
 }
 
+// ─── Generic thread context helpers ─────────────────────────────────────────
+
+async function fetchThreadMessages(
+  channel: string,
+  threadTs: string,
+  client: any
+): Promise<any[]> {
+  try {
+    const threadRes = await client.conversations.replies({
+      channel,
+      ts: threadTs,
+      limit: 200,
+    });
+    return (threadRes.messages ?? []) as any[];
+  } catch {
+    return [];
+  }
+}
+
+function buildGenericThreadContext(messages: any[]): string {
+  if (messages.length <= 1) return "";
+  const lines: string[] = ["--- PRIOR THREAD DISCUSSION ---"];
+  for (const msg of messages.slice(0, -1)) {
+    const who = msg.bot_id ? "bot" : `user:${msg.user ?? "unknown"}`;
+    lines.push(`[${who}] ${(msg.text ?? "").trim()}`);
+  }
+  lines.push("--- END PRIOR THREAD DISCUSSION ---");
+  return lines.join("\n");
+}
+
+// ─── Smart-reply caller ─────────────────────────────────────────────────────
+
+interface SmartReplyResult {
+  type: "answer" | "clarify" | "workflow";
+  answer?: string;
+  question?: string;
+  missing?: string[];
+  workflow?: string;
+  inputs?: Record<string, string>;
+  repoId: string | null;
+  confidence: number;
+  reason: string;
+}
+
+async function callSmartReply(
+  prompt: string,
+  threadContext: string,
+  repoId: string | null,
+  surface: "mention" | "dm"
+): Promise<SmartReplyResult> {
+  const body: Record<string, any> = { prompt, surface };
+  if (threadContext) body.threadContext = threadContext;
+  if (repoId) body.repoId = repoId;
+
+  const res = await fetch(`${ARCHON_SERVER_URL}/api/smart-reply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return archonResponseJson<SmartReplyResult>(res, "POST /api/smart-reply");
+}
+
+async function handleSmartReply(
+  prompt: string,
+  channel: string,
+  thread_ts: string,
+  client: any,
+  logger: any,
+  surface: "mention" | "dm",
+  existingRepoId?: string | null
+): Promise<void> {
+  const messages = await fetchThreadMessages(channel, thread_ts, client);
+  const threadContext = buildGenericThreadContext(messages);
+
+  let reply: SmartReplyResult;
+  try {
+    reply = await callSmartReply(prompt, threadContext, existingRepoId ?? null, surface);
+  } catch (err: any) {
+    logger.error(`smart-reply call failed: ${err.message}`);
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: `Error connecting to Archon server: ${err.message}`,
+    });
+    return;
+  }
+
+  if (reply.type === "answer") {
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: reply.answer ?? "I don't have an answer for that right now.",
+    });
+    return;
+  }
+
+  if (reply.type === "clarify") {
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: reply.question ?? "Could you provide more details?",
+    });
+    return;
+  }
+
+  // type === "workflow"
+  const repoId = reply.repoId;
+  const workflow = reply.workflow ?? DEFAULT_WORKFLOW;
+  const inputs = reply.inputs ?? {};
+
+  if (!repoId) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: reply.question ?? "Which repository should I work with? " + (await noRepoErrorText("@ArchonBot")),
+    });
+    return;
+  }
+
+  try {
+    const result = await triggerWorkflow(repoId, workflow, prompt, inputs);
+    if (result.error) {
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `Failed to start workflow: ${result.error}`,
+      });
+      return;
+    }
+    const runId = result.runId ?? "";
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      blocks: successBlocks({ repoId, workflow, prompt, runId }),
+      text: `Archon run ${runId} started for ${repoId}/${workflow}`,
+    });
+
+    pollRunAndPostResult(runId, repoId, channel, thread_ts, client, logger).catch(
+      (err) => logger.error("pollRunAndPostResult error:", err)
+    );
+  } catch (err: any) {
+    logger.error(err);
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: `Error connecting to Archon server: ${err.message}`,
+    });
+  }
+}
+
 // ─── Harness thread follow-up ───────────────────────────────────────────────
 async function handleHarnessFollowUp(
   ctx: HarnessThreadContext,
@@ -1329,29 +1581,8 @@ async function handleHarnessFollowUp(
     text: `_Routing follow-up..._`,
   });
 
-  let threadContext = "";
-  try {
-    const threadRes = await client.conversations.replies({
-      channel,
-      ts: thread_ts,
-      limit: 200,
-    });
-    const messages = (threadRes.messages ?? []) as any[];
-    const humanReplies = messages.filter(
-      (msg: any) => !msg.bot_id && !msg.subtype
-    );
-    if (humanReplies.length > 0) {
-      const lines: string[] = ["--- PRIOR THREAD DISCUSSION ---"];
-      for (const msg of messages) {
-        const who = msg.bot_id ? "bot" : `user:${msg.user ?? "unknown"}`;
-        lines.push(`[${who}] ${(msg.text ?? "").trim()}`);
-      }
-      lines.push("--- END PRIOR THREAD DISCUSSION ---");
-      threadContext = lines.join("\n");
-    }
-  } catch (err: any) {
-    logger.error(`Failed to collect harness thread history: ${err.message}`);
-  }
+  const messages = await fetchThreadMessages(channel, thread_ts, client);
+  const threadContext = buildGenericThreadContext(messages);
 
   const fullPrompt = threadContext
     ? `${threadContext}\n\nNew follow-up request:\n${newPrompt}`
@@ -1409,12 +1640,9 @@ async function handleHarnessFollowUp(
 }
 
 // ─── @mentions ─────────────────────────────────────────────────────────────
-// Tag the bot in any channel it's been invited to:
-//   @ArchonBot ubx-ui pr-review fix flaky login test
-//   @ArchonBot fix the readme typo          (uses defaults)
-//   @ArchonBot help
-//   @ArchonBot update the PRD doc   (inside a tracked PRD thread)
-//   @ArchonBot answer this          (inside a tracked PRD thread)
+// Tag the bot in any channel it's been invited to. The bot now answers
+// everything: questions get a direct answer, unclear requests get a clarifying
+// question, and clear action intents trigger a workflow.
 app.event("app_mention", async ({ event, client, logger }) => {
   const text = (event as any).text ?? "";
   const channel = (event as any).channel as string;
@@ -1450,63 +1678,11 @@ app.event("app_mention", async ({ event, client, logger }) => {
     }
   }
 
-  if (!stripped || /^(help|\?|usage)$/i.test(stripped)) {
-    await client.chat.postMessage({
-      channel,
-      thread_ts,
-      text: usageText("@ArchonBot"),
-    });
-    return;
-  }
-
-  const inv = await parseInvocation(text);
-
-  if (!inv.prompt) {
-    await client.chat.postMessage({
-      channel,
-      thread_ts,
-      text: usageText("@ArchonBot"),
-    });
-    return;
-  }
-  if (!inv.repoId) {
-    await client.chat.postMessage({
-      channel,
-      thread_ts,
-      text: await noRepoErrorText("@ArchonBot"),
-    });
-    return;
-  }
-
-  try {
-    const result = await triggerWorkflow(inv.repoId, inv.workflow, inv.prompt);
-    if (result.error) {
-      await client.chat.postMessage({
-        channel,
-        thread_ts,
-        text: `Failed to start workflow: ${result.error}`,
-      });
-      return;
-    }
-    const runId = result.runId ?? "";
-    await client.chat.postMessage({
-      channel,
-      thread_ts,
-      blocks: successBlocks({ ...inv, runId }),
-      text: `Archon run ${runId} started for ${inv.repoId}/${inv.workflow}`,
-    });
-
-    pollRunAndPostResult(runId, inv.repoId, channel, thread_ts, client, logger).catch(
-      (err) => logger.error("pollRunAndPostResult error:", err)
-    );
-  } catch (err: any) {
-    logger.error(err);
-    await client.chat.postMessage({
-      channel,
-      thread_ts,
-      text: `Error connecting to Archon server: ${err.message}`,
-    });
-  }
+  // Smart handler: answer, clarify, or trigger workflow via LLM
+  const prompt = stripped || "help";
+  handleSmartReply(prompt, channel, thread_ts, client, logger, "mention").catch(
+    (err) => logger.error("handleSmartReply (mention) error:", err)
+  );
 });
 
 // ─── PRD thread reply → Google Doc suggestion ──────────────────────────────
@@ -1610,7 +1786,10 @@ async function postGDocReply(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ docId, commentId, body }),
     });
-    return (await res.json()) as { replyId?: string; error?: string };
+    return await archonResponseJson<{ replyId?: string; error?: string }>(
+      res,
+      "POST /api/gdoc-reply"
+    );
   } catch (err: any) {
     return { error: err.message };
   }
@@ -1631,7 +1810,15 @@ app.message(async ({ message, client, logger }) => {
 
   const match = await matchReplyToQuery(text, ctx.queries);
   if (!match) {
-    // Not a clear answer to any query — silently ignore
+    const queryList = ctx.queries.map((q) => `Q${q.index}: ${q.body.slice(0, 80)}`).join("\n");
+    await client.chat.postMessage({
+      channel: m.channel,
+      thread_ts: m.thread_ts,
+      text:
+        `I couldn't tell which question you're answering. ` +
+        `Prefix your reply with \`Q<number>\` to match it, e.g. \`Q1 yes, we should...\`\n\n` +
+        `Open questions:\n${queryList}`,
+    });
     return;
   }
 
@@ -1664,66 +1851,24 @@ app.message(async ({ message, client, logger }) => {
 });
 
 // ─── Direct messages ───────────────────────────────────────────────────────
-// Users can also DM the bot without a mention.
+// Users can DM the bot without a mention. Smart handler answers everything.
 app.message(async ({ message, client, logger }) => {
-  // Only handle DMs from humans.
   const m = message as any;
   if (m.channel_type !== "im") return;
   if (m.subtype || m.bot_id) return;
   const text = m.text ?? "";
 
   const stripped = stripMentions(text);
-  if (!stripped || /^(help|\?|usage)$/i.test(stripped)) {
-    await client.chat.postMessage({
-      channel: m.channel,
-      text: usageText("(DM)"),
-    });
-    return;
-  }
+  if (!stripped) return;
 
-  const inv = await parseInvocation(text);
-
-  if (!inv.prompt) {
-    await client.chat.postMessage({ channel: m.channel, text: usageText("(DM)") });
-    return;
-  }
-  if (!inv.repoId) {
-    await client.chat.postMessage({
-      channel: m.channel,
-      text: await noRepoErrorText("(DM)"),
-    });
-    return;
-  }
-
-  try {
-    const result = await triggerWorkflow(inv.repoId, inv.workflow, inv.prompt);
-    if (result.error) {
-      await client.chat.postMessage({
-        channel: m.channel,
-        text: `Failed to start workflow: ${result.error}`,
-      });
-      return;
-    }
-    const runId = result.runId ?? "";
-    await client.chat.postMessage({
-      channel: m.channel,
-      blocks: successBlocks({ ...inv, runId }),
-      text: `Archon run ${runId} started for ${inv.repoId}/${inv.workflow}`,
-    });
-
-    pollRunAndPostResult(runId, inv.repoId, m.channel, m.ts, client, logger).catch(
-      (err) => logger.error("pollRunAndPostResult error:", err)
-    );
-  } catch (err: any) {
-    logger.error(err);
-    await client.chat.postMessage({
-      channel: m.channel,
-      text: `Error connecting to Archon server: ${err.message}`,
-    });
-  }
+  const thread_ts = m.thread_ts ?? m.ts;
+  handleSmartReply(stripped, m.channel, thread_ts, client, logger, "dm").catch(
+    (err) => logger.error("handleSmartReply (dm) error:", err)
+  );
 });
 
 (async () => {
+  await probeArchonOnStartup();
   const port = parseInt(process.env.SLACK_BOT_PORT ?? "3200", 10);
   await app.start(port);
   console.log(`Archon Hub Slack bot listening on port ${port}`);

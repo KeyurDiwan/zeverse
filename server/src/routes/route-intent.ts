@@ -3,8 +3,16 @@ import { listRepos, requireRepo } from "../repos";
 import { loadConfig } from "../config";
 import { createLLMProvider } from "../llm";
 import { loadWorkflows } from "../workflows";
+import { matchWorkflowKeyword } from "../workflow-infer";
 
 export const routeIntentRoutes = Router();
+
+function extractFreshreleaseTaskUrl(text: string): string | undefined {
+  const m = text.match(
+    /https?:\/\/[^\s]+freshrelease\.com\/ws\/[^/\s]+\/tasks\/[^\s)]+/i
+  );
+  return m?.[0];
+}
 
 interface RouteIntentResponse {
   repoId: string | null;
@@ -111,6 +119,30 @@ routeIntentRoutes.post("/route-intent", async (req: Request, res: Response) => {
       return;
     }
 
+    const workflowNames = new Set(workflows.map((w) => w.name));
+
+    // Same keyword ordering as `/api/infer-workflow` so harness matches the Hub UI / Slack
+    // parser (e.g. "analyze fr <url>" → fr-analyze, not fr-task-finisher).
+    const keywordWorkflow = matchWorkflowKeyword(prompt, workflowNames);
+    if (keywordWorkflow) {
+      const frNeedsUrl =
+        keywordWorkflow === "fr-analyze" || keywordWorkflow === "fr-task-finisher";
+      const frUrl = extractFreshreleaseTaskUrl(prompt);
+      if (!frNeedsUrl || frUrl) {
+        const inputs: Record<string, string> = { requirement: prompt };
+        if (frNeedsUrl && frUrl) inputs.frUrl = frUrl;
+        res.json({
+          repoId,
+          workflow: keywordWorkflow,
+          inputs,
+          confidence: 0.95,
+          reason: `Keyword routing → ${keywordWorkflow}`,
+          fallback: false,
+        } satisfies RouteIntentResponse);
+        return;
+      }
+    }
+
     const workflowCatalog = workflows
       .map((w) => {
         const inputList = w.inputs
@@ -119,8 +151,6 @@ routeIntentRoutes.post("/route-intent", async (req: Request, res: Response) => {
         return `- name: ${w.name} | description: ${w.description} | inputs: [${inputList}]`;
       })
       .join("\n");
-
-    const workflowNames = new Set(workflows.map((w) => w.name));
 
     const llm = createLLMProvider(loadConfig());
     const response = await llm.chat([
@@ -147,6 +177,16 @@ routeIntentRoutes.post("/route-intent", async (req: Request, res: Response) => {
           '  The main prompt text should go into the primary required input (usually "requirement", "bug", or "focus").',
           '- If the prompt is a general question, explanation request, or does not match any workflow well, use "ask".',
           '- ONLY use workflow names from the provided list.',
+          "",
+          "Routing hints for common intents:",
+          '- "analyze FR card" / "analyze fr …" → "fr-analyze" (set inputs.frUrl from task URL)',
+          '- Freshrelease task URL without analyze intent → "fr-task-finisher" (set inputs.frUrl)',
+          '- "create epic/task/card" → "fr-card-creator"',
+          '- "write tests for <file>" → "test-write" (set inputs.target)',
+          '- "raise/open/create PR" → "pr-raise"',
+          '- "review PR" or GitHub PR URL → "code-review" (set inputs.pr)',
+          '- Google Doc URL or "PRD" → "prd-analysis" (set inputs.docUrl)',
+          '- Bug fix request → "fix-bug"',
         ].join("\n"),
       },
       {

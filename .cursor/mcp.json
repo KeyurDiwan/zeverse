@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "freshrelease": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${userHome}/.claude/mcp-servers/freshrelease/index.js"],
+      "env": {
+        "FRESHRELEASE_API_TOKEN": "0xsITr-P54DvpumgzmQ7Rw"
+      },
+      "envFile": "${workspaceFolder}/.env"
+    }
+  }
+}

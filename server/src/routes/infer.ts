@@ -1,9 +1,36 @@
 import { Router, Request, Response } from "express";
-import { listRepos } from "../repos";
+import { listRepos, requireRepo } from "../repos";
 import { loadConfig } from "../config";
 import { createLLMProvider } from "../llm";
+import { loadWorkflows } from "../workflows";
+import { inferWorkflowFromPrompt, matchWorkflowKeyword } from "../workflow-infer";
 
 export const inferRoutes = Router();
+
+inferRoutes.post("/infer-workflow", (req: Request, res: Response) => {
+  try {
+    const { repoId, prompt } = req.body ?? {};
+    if (!repoId || typeof repoId !== "string") {
+      res.status(400).json({ error: "repoId is required" });
+      return;
+    }
+    if (!prompt || typeof prompt !== "string") {
+      res.status(400).json({ error: "prompt is required" });
+      return;
+    }
+
+    const repo = requireRepo(repoId);
+    const workflows = loadWorkflows(repo);
+    const names = new Set(workflows.map((w) => w.name));
+    const defaultWorkflow = process.env.ARCHON_DEFAULT_WORKFLOW ?? "dev";
+    const keywordMatch = matchWorkflowKeyword(prompt, names);
+    const workflow = inferWorkflowFromPrompt(prompt, names, defaultWorkflow);
+
+    res.json({ workflow, keywordMatch });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message ?? "infer-workflow failed" });
+  }
+});
 
 inferRoutes.post("/infer-repo", async (req: Request, res: Response) => {
   try {

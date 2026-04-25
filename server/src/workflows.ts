@@ -11,7 +11,21 @@ export interface WorkflowInput {
 
 export interface WorkflowStep {
   id: string;
-  kind: "llm" | "shell" | "review" | "apply" | "patch" | "edit" | "gdoc-fetch" | "gdoc-comment";
+  kind:
+    | "llm"
+    | "shell"
+    | "review"
+    | "apply"
+    | "patch"
+    | "edit"
+    | "gdoc-fetch"
+    | "gdoc-comment"
+    | "gdoc-reply"
+    | "gdoc-resolve"
+    | "gdoc-suggest"
+    | "fr-fetch"
+    | "fr-create"
+    | "fr-comment";
   prompt?: string;
   command?: string;
   cwd?: string;
@@ -37,6 +51,29 @@ export interface WorkflowStep {
   docUrl?: string;
   /** For `gdoc-comment`: step id whose output contains the queries JSON block. */
   queriesFrom?: string;
+  /** For `gdoc-reply`: step id whose output contains `[{ commentId, body }]` JSON. */
+  repliesFrom?: string;
+  /** For `gdoc-resolve`: step id whose output contains `[commentId, ...]` JSON. */
+  resolvesFrom?: string;
+  /** For `gdoc-suggest`: step id whose output contains `[{ anchor, replacement }]` JSON. */
+  suggestsFrom?: string;
+  /** For `fr-comment`: step id whose output is used as the comment body. */
+  bodyFrom?: string;
+  /**
+   * For `fr-comment`: if `summary`, post the "## Summary" section (plus a short header/footer)
+   * instead of the full step output — avoids huge comments and FR API size limits. Default `full`.
+   */
+  frCommentExcerpt?: "full" | "summary";
+  /** For `fr-create`: step id whose output contains fenced `fr-issues` JSON. */
+  contentFrom?: string;
+  /** For `gdoc-fetch`: when true, appends existing comments to output. */
+  includeComments?: boolean;
+  /** For `fr-create` / `fr-fetch`: Freshrelease workspace key (default BILLING). */
+  workspace?: string;
+  /** For `fr-fetch` / `fr-comment`: Freshrelease task URL (supports templates). */
+  frUrl?: string;
+  /** Optional condition — step is skipped when the rendered value is falsy. */
+  when?: string;
 }
 
 export interface Workflow {

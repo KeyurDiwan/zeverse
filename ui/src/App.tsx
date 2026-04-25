@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  fetchInferWorkflow,
   fetchLogs,
   fetchRepos,
   fetchRun,
@@ -12,6 +13,15 @@ import {
   type WorkflowSummary,
 } from "./api";
 import AddRepoModal from "./AddRepoModal";
+
+const GENERIC_UI_WORKFLOWS = new Set(["dev", "ask"]);
+
+function extractFreshreleaseTaskUrl(text: string): string | undefined {
+  const m = text.match(
+    /https?:\/\/[^\s]+freshrelease\.com\/ws\/[^/\s]+\/tasks\/[^\s)]+/i
+  );
+  return m?.[0];
+}
 
 const STATUS_COLORS: Record<RunStatus, string> = {
   queued: "var(--warning)",
@@ -174,9 +184,47 @@ export default function App() {
     setRun(null);
     logOffset.current = 0;
     try {
+      let workflowToRun = selectedWorkflow;
+      if (GENERIC_UI_WORKFLOWS.has(selectedWorkflow) && primary.trim()) {
+        try {
+          const { keywordMatch } = await fetchInferWorkflow(selectedRepoId, primary);
+          if (
+            keywordMatch &&
+            workflows.some((w) => w.name === keywordMatch)
+          ) {
+            workflowToRun = keywordMatch;
+          }
+        } catch {
+          // keep sidebar selection
+        }
+      }
+
+      if (
+        (workflowToRun === "fr-analyze" || workflowToRun === "fr-task-finisher") &&
+        !trimmedInputs.frUrl
+      ) {
+        const frUrl = extractFreshreleaseTaskUrl(primary);
+        if (frUrl) trimmedInputs.frUrl = frUrl;
+      }
+
+      const runMeta = workflows.find((w) => w.name === workflowToRun);
+      if (!runMeta) {
+        setError(`Workflow "${workflowToRun}" is not available for this repo.`);
+        return;
+      }
+      const runMissing = runMeta.inputs
+        .filter((i) => i.required)
+        .filter((i) => !(trimmedInputs[i.id] ?? "").trim());
+      if (runMissing.length > 0) {
+        setError(
+          `Workflow "${workflowToRun}" requires: ${runMissing.map((i) => i.label || i.id).join(", ")}`
+        );
+        return;
+      }
+
       const id = await triggerRun(
         selectedRepoId,
-        selectedWorkflow,
+        workflowToRun,
         primary,
         trimmedInputs
       );
@@ -192,6 +240,7 @@ export default function App() {
     declaredInputs,
     missingRequired,
     inputValues,
+    workflows,
   ]);
 
   useEffect(() => {

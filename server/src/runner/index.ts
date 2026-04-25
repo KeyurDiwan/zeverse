@@ -13,9 +13,18 @@ import {
 import {
   executeGDocFetchStep,
   executeGDocCommentStep,
+  executeGDocReplyStep,
+  executeGDocResolveStep,
+  executeGDocSuggestStep,
 } from "./executors-gdoc";
+import {
+  executeFRFetchStep,
+  executeFRCreateStep,
+  executeFRCommentStep,
+} from "./executors-fr";
 import { appendLog, RunState, saveState } from "./state";
 import type { TemplateContext } from "./template";
+import { renderTemplate } from "./template";
 
 const activeRuns = new Map<string, RunState>();
 
@@ -93,6 +102,30 @@ async function runWorkflow(
     const step = workflow.steps[i];
     const stepState = state.steps[i];
 
+    // --- `when` conditional guard ---
+    if (step.when) {
+      const rendered = renderTemplate(step.when, ctx).trim();
+      const falsy =
+        !rendered ||
+        rendered === "false" ||
+        rendered === "no" ||
+        rendered === "0";
+      if (falsy) {
+        stepState.status = "success";
+        stepState.output = `(skipped — when condition evaluated to "${rendered}")`;
+        stepState.startedAt = new Date().toISOString();
+        stepState.finishedAt = new Date().toISOString();
+        ctx.steps[step.id] = { output: stepState.output };
+        saveState(state);
+        appendLog(
+          repo.id,
+          runId,
+          `--- Step ${i + 1}/${workflow.steps.length}: ${step.id} SKIPPED (when="${step.when}" → "${rendered}") ---`
+        );
+        continue;
+      }
+    }
+
     stepState.status = "running";
     stepState.startedAt = new Date().toISOString();
     saveState(state);
@@ -135,8 +168,28 @@ async function runWorkflow(
         case "gdoc-comment":
           output = await executeGDocCommentStep(step, ctx, repo.id, runId);
           break;
+        case "gdoc-reply":
+          output = await executeGDocReplyStep(step, ctx, repo.id, runId);
+          break;
+        case "gdoc-resolve":
+          output = await executeGDocResolveStep(step, ctx, repo.id, runId);
+          break;
+        case "gdoc-suggest":
+          output = await executeGDocSuggestStep(step, ctx, repo.id, runId);
+          break;
+        case "fr-fetch":
+          output = await executeFRFetchStep(step, ctx, repo.id, runId);
+          break;
+        case "fr-create":
+          output = await executeFRCreateStep(step, ctx, repo.id, runId);
+          break;
+        case "fr-comment":
+          output = await executeFRCommentStep(step, ctx, repo.id, runId);
+          break;
         default:
-          throw new Error(`Unknown step kind: ${step.kind}`);
+          throw new Error(
+            `Unknown step kind: ${step.kind}. If you pulled a newer Archon Hub, run "npm run build" in server/ (or use "npm run dev") and restart.`
+          );
       }
 
       stepState.output = output;

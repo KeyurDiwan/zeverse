@@ -13,6 +13,7 @@
     "dev:server": "npm run dev --workspace=server",
     "dev:ui": "npm run dev --workspace=ui",
     "dev:slack": "npm run dev --workspace=slack-bot",
+    "check:archon": "node scripts/check-archon.cjs",
     "build": "npm run build --workspaces --if-present"
   }
 }

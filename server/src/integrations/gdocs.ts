@@ -219,6 +219,61 @@ export async function suggestEdits(
   return { applied, skipped };
 }
 
+export interface DetailedComment {
+  id: string;
+  content: string;
+  resolved: boolean;
+  replies: { id: string; content: string; author: string }[];
+}
+
+export async function listOpenCommentsDetailed(
+  docId: string
+): Promise<DetailedComment[]> {
+  const { drive } = getClients();
+  const result: DetailedComment[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const res = await drive.comments.list({
+      fileId: docId,
+      fields:
+        "comments(id,content,deleted,resolved,replies(id,content,author/displayName)),nextPageToken",
+      pageSize: 100,
+      includeDeleted: false,
+      pageToken,
+    });
+    for (const c of res.data.comments ?? []) {
+      if (c.deleted) continue;
+      result.push({
+        id: c.id ?? "",
+        content: c.content ?? "",
+        resolved: !!c.resolved,
+        replies: (c.replies ?? []).map((r: any) => ({
+          id: r.id ?? "",
+          content: r.content ?? "",
+          author: r.author?.displayName ?? "",
+        })),
+      });
+    }
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return result;
+}
+
+export async function resolveComment(
+  docId: string,
+  commentId: string
+): Promise<void> {
+  const { drive } = getClients();
+  await drive.comments.update({
+    fileId: docId,
+    commentId,
+    requestBody: { resolved: true } as any,
+    fields: "id",
+  });
+}
+
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return text.slice(0, max) + "…";

@@ -89,8 +89,21 @@ Step kinds:
 | `llm`          | Send a prompt to the configured LLM               |
 | `review`       | Same as `llm`, semantically marked as a review    |
 | `shell`        | Execute a shell command in the target repo         |
-| `gdoc-fetch`   | Fetch plain text from a Google Doc (via `docUrl`)  |
+| `apply`        | Write files from fenced code blocks (`path=…`)    |
+| `patch`        | Apply unified-diff patches via `git apply`        |
+| `edit`         | Search/replace edits on existing files             |
+| `gdoc-fetch`   | Fetch plain text from a Google Doc (via `docUrl`). Set `includeComments: true` to append existing comments. |
 | `gdoc-comment` | Post comments on a Google Doc from a queries JSON  |
+| `gdoc-reply`   | Reply to existing Google Doc comments (`repliesFrom`) |
+| `gdoc-resolve` | Resolve Google Doc comment threads (`resolvesFrom`) |
+| `gdoc-suggest` | Post suggest-edits on a Google Doc (`suggestsFrom`) |
+| `fr-fetch`     | Fetch a Freshrelease task with all comments (`frUrl`) |
+| `fr-create`    | Create FR issues from a fenced `fr-issues` JSON block (`contentFrom`) |
+| `fr-comment`   | Post a comment on a Freshrelease task (`frUrl`, `bodyFrom`) |
+
+Steps support an optional `when:` field — a template expression that is evaluated at
+runtime. When the rendered value is empty, `"false"`, `"no"`, or `"0"`, the step is
+skipped. This enables mode-driven branching within a single workflow.
 
 Shell steps run with `cwd` resolved against the target repo's path (or relative to it, if `cwd:` is set on the step).
 
@@ -112,6 +125,7 @@ Templating uses `{{inputs.<id>}}` and `{{steps.<id>.output}}`.
 | POST   | `/api/gdoc-suggest`           | Apply tracked-change suggestions (`{docId, edits[]}`) |
 | POST   | `/api/infer-repo`             | LLM-inferred repo selection (`{prompt}`) |
 | POST   | `/api/route-intent`           | LLM-based intent router (`{prompt, repoId?}`) — returns `{workflow, inputs, confidence, reason, fallback}` |
+| POST   | `/api/smart-reply`            | Universal LLM handler (`{prompt, threadContext?, repoId?, surface}`) — returns `{type: answer\|clarify\|workflow, ...}` |
 | GET    | `/health`                     | Health check                            |
 
 ## Slack bot
@@ -132,11 +146,17 @@ prompt and an LLM-based intent router picks the best workflow automatically:
 | Prompt style | Routed to |
 |---|---|
 | "fix the login redirect loop" | `fix-bug` |
-| "review my branch vs origin/main" | `pr-review` |
+| "review my branch vs origin/main" | `code-review` |
 | "explain src/store" | `explain-codebase` |
 | "add a dark-mode toggle to settings" | `dev` |
 | "how does billing routing work?" | `ask` (read-only Q&A) |
 | "bump react to 19" | `upgrade-dep` |
+| `https://freshrelease.com/ws/BILLING/tasks/BILLING-123` | `fr-task-finisher` |
+| "create epic for onboarding flow" | `fr-card-creator` |
+| "analyze FR BILLING-10444" | `fr-analyze` |
+| "write tests for src/pages/billing/InvoiceList.tsx" | `test-write` |
+| "raise PR" | `pr-raise` |
+| `https://docs.google.com/document/d/…` | `prd-analysis` |
 
 The router posts the chosen workflow + reason in Slack before execution starts.
 If the LLM can't confidently pick a workflow (confidence < 60%), it falls back to
@@ -156,16 +176,20 @@ with a finalised/not-finalised verdict plus a summary of the top open questions.
 
 ### 2. @mentions (tag the bot in any channel)
 
-Invite the bot to a channel, then tag it:
+Invite the bot to a channel, then tag it. The bot answers **everything** — it
+reads the full Slack thread for context, then decides whether to answer the
+question directly, ask a clarifying question, or trigger a workflow:
 
 ```
-@ArchonBot ubx-ui pr-review fix flaky login test
-@ArchonBot ubx-ui add empty-state to dashboard       # uses default workflow (dev)
-@ArchonBot fix the login bug                          # repo inferred via LLM, workflow inferred as fix-bug
-@ArchonBot help
+@ArchonBot how does the billing router work?          # answered directly via LLM
+@ArchonBot fix the login bug                          # triggers fix-bug workflow
+@ArchonBot fix something                              # asks "Which repo / what exactly is broken?"
+@ArchonBot ubx-ui pr-review fix flaky login test      # triggers pr-review workflow
+@ArchonBot help                                       # friendly greeting + capabilities
 ```
 
-The bot replies in-thread with a run link back to the Archon Hub UI.
+When the bot triggers a workflow it replies in-thread with a run link back to
+the Archon Hub UI.
 
 ### 2a. @mentions inside PRD threads
 
@@ -196,10 +220,12 @@ Any other @mention text in a PRD thread falls through to the normal workflow tri
 
 ### 3. Direct message
 
-DM the bot the same syntax (no mention needed):
+DM the bot (no mention needed). Same smart behaviour as @mentions — it answers
+questions, asks clarifying follow-ups, or triggers workflows:
 
 ```
-ubx-ui pr-review fix flaky login test
+how does the billing router work?
+fix the login bug in ubx-ui
 ```
 
 ### Slack app setup
@@ -219,8 +245,10 @@ Defaults:
   registry (or auto-selects when only one repo exists).
 - **Workflow**: if `<workflow>` is omitted (and the command doesn't force one),
   the bot matches keywords in the prompt to available workflows:
-  `fix`/`bug` → `fix-bug`, `review`/`pr` → `pr-review`, `lint` → `lint-fix`,
-  `test` → `test`, `explain` → `explain-codebase`, `upgrade`/`bump` → `upgrade-dep`.
+  `fix`/`bug` → `fix-bug`, `review`/`pr` → `code-review`, `lint` → `lint-fix`,
+  `test` → `test-write`, `explain` → `explain-codebase`, `upgrade`/`bump` → `upgrade-dep`,
+  `create epic`/`create task`/`card` → `fr-card-creator`, `analyze FR` → `fr-analyze`,
+  `finish FR` / FR URL → `fr-task-finisher`, `raise PR` → `pr-raise`.
   Falls back to `ARCHON_DEFAULT_WORKFLOW` (default `dev`).
 
 ### Google Docs integration (for `/archon-prd`)
@@ -237,6 +265,55 @@ Defaults:
   still work normally.
 - **Editor**: all operations work, but `update` edits become direct writes instead
   of suggestions.
+
+### Freshrelease integration
+
+Workflows `fr-card-creator`, `fr-analyze`, and `fr-task-finisher` talk to the
+Freshrelease API to fetch tasks, create cards, and post comments.
+
+The `fr-analyze` workflow in **ubx-ui** follows the same “FR Analyzer” behaviour as the Cursor agent (analysis-only, full comment context, structured sections); the hub uses **`fr-fetch`** and the LLM instead of calling Freshrelease MCP tools at runtime.
+
+The `fr-task-finisher` workflow uses a **discover -> implement -> retry** contract:
+
+1. **`discover`** -- extracts keywords from the FR card and the LLM intent output,
+   greps the repo for matching files, and emits their **full contents** (capped at
+   800 lines/file, top 10 files). This replaces the old `codebase-map` step that
+   only provided a directory tree.
+2. **`implement`** -- the LLM emits `SEARCH/REPLACE` edit blocks, required to copy the
+   SEARCH text verbatim from the discovery output. `<<<<<<< CREATE` is forbidden for
+   existing source files (only allowed for new test files under `__tests__/`).
+3. **`apply-edits-check` + `implement-retry`** -- if the first apply reports any
+   `FAIL` lines or `Applied 0/`, the LLM gets a second attempt with the error
+   messages and the same file contents.
+4. **`edits-landed`** -- downstream steps (tests, lint, review) are skipped entirely
+   when neither attempt applied any edits. The FR comment clearly reports
+   "failed -- no edits applied" so the card is not left in an ambiguous state.
+
+The `edit` executor (`executeEditStep`) now tracks a `dirtyFiles` set and only
+flushes files that had at least one successful op -- failed SEARCH blocks against
+non-existent paths no longer create empty stub files on disk.
+
+1. Set `FRESHRELEASE_API_TOKEN` in `.env` to your Freshrelease personal API token.
+2. Optionally set `FRESHRELEASE_WORKSPACE` (default: `BILLING`).
+
+The same token that powers the Cursor MCP at `~/.claude/mcp-servers/freshrelease/`
+works here.
+
+### Available workflows
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `prd-analysis` | Google Doc URL / "PRD" | Fetch PRD, cross-ref codebase, post queries as GDoc comments, reply/resolve answered threads, suggest edits, write deliverable, open PR |
+| `fr-card-creator` | "create epic/task/card" | Parse prompt or PRD markdown into FR issues, create Epic then Tasks in Freshrelease |
+| `fr-analyze` | FR URL / "analyze FR" | Fetch FR card, cross-check against codebase, produce structured analysis with a design-level recommended solution (files, approach, illustrative snippets — no repo changes); from Slack, posts the `## Summary` in the thread |
+| `fr-task-finisher` | FR URL / "finish FR" / "fix FR" | Full e2e: fetch FR → discover files → plan → implement (SEARCH/REPLACE) → retry on failure → test → review → commit → PR → comment back |
+| `code-review` | "review PR" / PR URL | Unified entry: local branch or remote PR review, posts comment on GitHub |
+| `test-write` | "write tests for …" | Find source, read it, generate Jest+RTL tests, run them, self-review |
+| `pr-raise` | "raise PR" / "open PR" | Push branch, auto-generate title+body, create PR via `gh` or REST |
+| `dev` | Feature request | Plan → implement → validate → self-review |
+| `fix-bug` | "fix" / "bug" | Diagnose → fix → test → review |
+| `ask` | General question | Read-only codebase Q&A |
+| `explain-codebase` | "explain" / "how does" | Walk through code structure |
 
 ## License
 
