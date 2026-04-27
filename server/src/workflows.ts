@@ -1,7 +1,9 @@
 import fs from "fs";
 import path from "path";
+import { spawnSync } from "child_process";
 import YAML from "yaml";
 import type { Repo } from "./repos";
+import { loadConfig, resolveHubPath } from "./config";
 
 export interface WorkflowInput {
   id: string;
@@ -32,69 +34,31 @@ export interface WorkflowStep {
   command?: string;
   cwd?: string;
   continueOnError?: boolean;
-  /** For `apply`/`patch` steps: template whose rendered output is scanned for blocks. */
   content?: string;
-  /** For `apply`/`patch` steps: if true, fail when no blocks are found. Defaults to true. */
   requireBlocks?: boolean;
-  /**
-   * For `apply` steps: refuse to overwrite an existing file whose new size is smaller than
-   * this fraction of the old size (e.g. 0.4 means skip if new < 40% of old).
-   * Files <= `shrinkGuardMinBytes` are exempt. Set to 0 to disable. Defaults to 0.4.
-   */
   shrinkGuardMinRatio?: number;
-  /** Files at or below this size are exempt from the shrink guard. Defaults to 1024. */
   shrinkGuardMinBytes?: number;
-  /**
-   * For `patch` steps: if true, pass `--index` to `git apply` so the change is also staged.
-   * Defaults to false (work-tree only, matches how `apply` behaves).
-   */
   stage?: boolean;
-  /** For `gdoc-fetch` / `gdoc-comment`: Google Doc URL or ID (supports templates). */
   docUrl?: string;
-  /** For `gdoc-comment`: step id whose output contains the queries JSON block. */
   queriesFrom?: string;
-  /** For `gdoc-reply`: step id whose output contains `[{ commentId, body }]` JSON. */
   repliesFrom?: string;
-  /** For `gdoc-resolve`: step id whose output contains `[commentId, ...]` JSON. */
   resolvesFrom?: string;
-  /** For `gdoc-suggest`: step id whose output contains `[{ anchor, replacement }]` JSON. */
   suggestsFrom?: string;
-  /** For `fr-comment`: step id whose output is used as the comment body. */
   bodyFrom?: string;
-  /**
-   * For `fr-comment`: if `summary`, post the "## Summary" section (plus a short header/footer)
-   * instead of the full step output — avoids huge comments and FR API size limits. Default `full`.
-   */
   frCommentExcerpt?: "full" | "summary";
-  /** For `fr-create`: step id whose output contains fenced `fr-issues` JSON. */
   contentFrom?: string;
-  /** For `gdoc-fetch`: when true, appends existing comments to output. */
   includeComments?: boolean;
-  /** For `fr-create` / `fr-fetch`: Freshrelease workspace key (default BILLING). */
   workspace?: string;
-  /** For `fr-fetch` / `fr-comment`: Freshrelease task URL (supports templates). */
   frUrl?: string;
-  /** For `workflow` steps: step id whose JSON output provides `{workflow, inputs}`. */
   workflowFrom?: string;
-  /** For `workflow` steps: step id whose JSON output provides child inputs (if separate from workflowFrom). */
   inputsFrom?: string;
-  /** For `workflow` steps: literal child workflow name (used when workflowFrom is absent). */
   childWorkflow?: string;
-  /** Optional condition — step is skipped when the rendered value is falsy. */
   when?: string;
-
-  /** Number of retry attempts on failure (0 = no retries). */
   retries?: number;
-  /** Base backoff delay in ms between retries (doubles each attempt). */
   retryBackoffMs?: number;
-  /** Template expression; step re-runs until this renders truthy (or maxIterations). */
   loopUntil?: string;
-  /** Max iterations for loopUntil (default 10). */
   maxIterations?: number;
-
-  /** For `approval` steps: which surface(s) to show the gate on. */
   surface?: "slack" | "ui" | "both";
-  /** For `approval` steps: how long to wait before auto-rejecting (ms). */
   approvalTimeoutMs?: number;
 }
 
@@ -103,22 +67,84 @@ export interface Workflow {
   description: string;
   inputs: WorkflowInput[];
   steps: WorkflowStep[];
-  /** Run isolation strategy. "branch" (default) creates a per-run git branch. */
   isolation?: "branch" | "none";
-  /** Step ids that must be "success" for the run to succeed. Checked after all steps finish. */
+  keepWorkspace?: boolean;
   gates?: string[];
-  /** When gates fail, optionally dispatch this child workflow to attempt a fix. */
   onGateFail?: { childWorkflow: string };
   _filename: string;
   _repoId: string;
 }
 
+// ── Workflow cache ──────────────────────────────────────────────────────────
+// Workflows and rules are loaded from the repo's default branch via a sparse
+// clone cached under state/<repoId>/.workflows-cache/. The cache is refreshed
+// on a TTL basis (default 60s).
+
+const CACHE_TTL_MS = 60_000;
+const cacheTimestamps = new Map<string, number>();
+
+function workflowsCacheDir(repoId: string): string {
+  return path.join(
+    resolveHubPath(loadConfig().paths.state_dir),
+    repoId,
+    ".workflows-cache"
+  );
+}
+
+function ensureWorkflowsCache(repo: Repo): string {
+  const cacheDir = workflowsCacheDir(repo.id);
+  const now = Date.now();
+  const lastRefresh = cacheTimestamps.get(repo.id) ?? 0;
+
+  if (fs.existsSync(path.join(cacheDir, ".git")) && now - lastRefresh < CACHE_TTL_MS) {
+    return cacheDir;
+  }
+
+  if (!fs.existsSync(path.join(cacheDir, ".git"))) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cloneRes = spawnSync("git", [
+      "clone", "--depth=1",
+      "--branch", repo.defaultBranch,
+      "--filter=blob:none", "--sparse",
+      repo.origin, cacheDir,
+    ], { stdio: "pipe", encoding: "utf-8", timeout: 120_000 });
+
+    if (cloneRes.status !== 0) {
+      throw new Error(`Workflow cache clone failed: ${cloneRes.stderr}`);
+    }
+
+    // --no-cone is required because .cursorrules is a file, not a directory;
+    // cone mode silently ignores file patterns and reverts to defaults.
+    spawnSync("git", [
+      "sparse-checkout", "set", "--no-cone",
+      "/.archon/", "/.cursorrules", "/.cursor/rules/",
+    ], { cwd: cacheDir, stdio: "pipe", encoding: "utf-8" });
+  } else {
+    spawnSync("git", ["fetch", "origin", repo.defaultBranch, "--depth=1"], {
+      cwd: cacheDir, stdio: "pipe", encoding: "utf-8", timeout: 60_000,
+    });
+    spawnSync("git", ["reset", "--hard", `origin/${repo.defaultBranch}`], {
+      cwd: cacheDir, stdio: "pipe", encoding: "utf-8",
+    });
+  }
+
+  cacheTimestamps.set(repo.id, now);
+  return cacheDir;
+}
+
+export function refreshWorkflowsCache(repo: Repo): void {
+  cacheTimestamps.delete(repo.id);
+  ensureWorkflowsCache(repo);
+}
+
 export function workflowsDir(repo: Repo): string {
-  return path.join(repo.path, ".archon", "workflows");
+  const cacheDir = ensureWorkflowsCache(repo);
+  return path.join(cacheDir, ".archon", "workflows");
 }
 
 export function commandsDir(repo: Repo): string {
-  return path.join(repo.path, ".archon", "commands");
+  const cacheDir = ensureWorkflowsCache(repo);
+  return path.join(cacheDir, ".archon", "commands");
 }
 
 export function loadWorkflows(repo: Repo): Workflow[] {
@@ -168,20 +194,20 @@ function readRuleFiles(dir: string, ext: string): { name: string; content: strin
 }
 
 /**
- * Load repo-specific rules/skills from:
+ * Load repo-specific rules/skills from the workflows cache:
  *   1. .archon/rules/*.md
  *   2. .cursorrules (single file)
  *   3. .cursor/rules/*.md
- * Returns concatenated text with section headers, capped at MAX_TOTAL_RULES chars.
  */
 export function loadRepoRules(repo: Repo): string {
+  const cacheDir = ensureWorkflowsCache(repo);
   const parts: string[] = [];
 
-  for (const rule of readRuleFiles(path.join(repo.path, ".archon", "rules"), ".md")) {
+  for (const rule of readRuleFiles(path.join(cacheDir, ".archon", "rules"), ".md")) {
     parts.push(`--- rules: .archon/rules/${rule.name} ---\n${rule.content}`);
   }
 
-  const cursorrules = path.join(repo.path, ".cursorrules");
+  const cursorrules = path.join(cacheDir, ".cursorrules");
   if (fs.existsSync(cursorrules)) {
     try {
       let content = fs.readFileSync(cursorrules, "utf-8").trim();
@@ -196,7 +222,7 @@ export function loadRepoRules(repo: Repo): string {
     }
   }
 
-  for (const rule of readRuleFiles(path.join(repo.path, ".cursor", "rules"), ".md")) {
+  for (const rule of readRuleFiles(path.join(cacheDir, ".cursor", "rules"), ".md")) {
     parts.push(`--- rules: .cursor/rules/${rule.name} ---\n${rule.content}`);
   }
 

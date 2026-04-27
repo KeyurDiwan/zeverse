@@ -80,6 +80,7 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAddRepo, setShowAddRepo] = useState(false);
+  const [branchOverride, setBranchOverride] = useState("");
   const logOffset = useRef(0);
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -226,7 +227,8 @@ export default function App() {
         selectedRepoId,
         workflowToRun,
         primary,
-        trimmedInputs
+        trimmedInputs,
+        branchOverride.trim() || undefined
       );
       setRunId(id);
     } catch (err: any) {
@@ -283,7 +285,7 @@ export default function App() {
 
   const handleRemoveRepo = useCallback(
     async (id: string) => {
-      if (!confirm("Remove this repo from Archon Hub? Files on disk are not deleted.")) {
+      if (!confirm("Remove this repo from Archon Hub?")) {
         return;
       }
       try {
@@ -383,7 +385,7 @@ export default function App() {
                     cursor: "pointer",
                     overflow: "hidden",
                   }}
-                  title={repo.path}
+                  title={repo.origin}
                 >
                   <div
                     style={{
@@ -406,7 +408,7 @@ export default function App() {
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {repo.path}
+                    {repo.defaultBranch}
                   </div>
                 </button>
                 <button
@@ -494,8 +496,9 @@ export default function App() {
             <p style={{ padding: "12px 16px", fontSize: 12, color: "var(--text-dim)" }}>
               No workflows in this repo. Add YAML files to <br />
               <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
-                {selectedRepo ? `${selectedRepo.path}/.archon/workflows/` : ".archon/workflows/"}
-              </code>
+                .archon/workflows/
+              </code>{" "}
+              in the repo&apos;s default branch.
             </p>
           )}
         </nav>
@@ -617,6 +620,41 @@ export default function App() {
               })}
             </div>
           )}
+          <div style={{ marginTop: 12 }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span
+                style={{
+                  fontSize: 12,
+                  color: "var(--text-dim)",
+                  fontWeight: 600,
+                  letterSpacing: "0.02em",
+                }}
+              >
+                Branch
+                <span style={{ marginLeft: 6, fontWeight: 400, color: "var(--text-dim)" }}>
+                  (defaults to {selectedRepo?.defaultBranch ?? "default"})
+                </span>
+              </span>
+              <input
+                type="text"
+                value={branchOverride}
+                onChange={(e) => setBranchOverride(e.target.value)}
+                placeholder={selectedRepo?.defaultBranch ?? "main"}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  background: "var(--surface)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  color: "var(--text)",
+                  fontSize: 14,
+                  fontFamily: "var(--font-mono)",
+                  outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+            </label>
+          </div>
           <div
             style={{
               display: "flex",

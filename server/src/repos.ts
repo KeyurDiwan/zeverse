@@ -6,8 +6,8 @@ import { loadConfig, resolveHubPath } from "./config";
 export interface Repo {
   id: string;
   name: string;
-  path: string;
-  origin?: string;
+  origin: string;
+  defaultBranch: string;
   addedAt: string;
 }
 
@@ -62,10 +62,28 @@ export function getRepo(id: string): Repo | undefined {
 export function requireRepo(id: string): Repo {
   const repo = getRepo(id);
   if (!repo) throw new Error(`Unknown repo: ${id}`);
-  if (!fs.existsSync(repo.path)) {
-    throw new Error(`Repo "${id}" path does not exist on disk: ${repo.path}`);
+  if (!repo.origin) {
+    throw new Error(`Repo "${id}" has no origin URL — update repos.json`);
   }
   return repo;
+}
+
+/**
+ * Parse owner/repo from a GitHub URL.
+ * Supports https://github.com/owner/repo(.git)? and git@github.com:owner/repo(.git)?
+ */
+export function parseGitHubOrigin(origin: string): { owner: string; repo: string } | null {
+  const httpsMatch = origin.match(
+    /github\.com\/([^/\s]+)\/([^/\s#?.]+?)(?:\.git)?\s*$/
+  );
+  if (httpsMatch) return { owner: httpsMatch[1], repo: httpsMatch[2] };
+
+  const sshMatch = origin.match(
+    /github\.com:([^/\s]+)\/([^/\s#?.]+?)(?:\.git)?\s*$/
+  );
+  if (sshMatch) return { owner: sshMatch[1], repo: sshMatch[2] };
+
+  return null;
 }
 
 export interface AddGitRepoInput {
@@ -73,16 +91,33 @@ export interface AddGitRepoInput {
   name?: string;
 }
 
-function registerRepo(absPath: string, name: string, origin?: string): Repo {
+/**
+ * Detect the default branch of a remote using `git ls-remote --symref`.
+ * Falls back to "main" on any error.
+ */
+function detectDefaultBranch(url: string): string {
+  const result = spawnSync("git", ["ls-remote", "--symref", url, "HEAD"], {
+    stdio: "pipe",
+    encoding: "utf-8",
+    timeout: 30_000,
+  });
+  if (result.status === 0) {
+    const m = result.stdout.match(/ref:\s+refs\/heads\/(\S+)\s+HEAD/);
+    if (m) return m[1];
+  }
+  return "main";
+}
+
+function registerRepo(name: string, origin: string, defaultBranch: string): Repo {
   const store = readStore();
-  const existing = store.repos.find((r) => path.resolve(r.path) === absPath);
+  const existing = store.repos.find((r) => r.origin === origin);
   if (existing) return existing;
 
   const repo: Repo = {
     id: uniqueId(name, store.repos),
     name,
-    path: absPath,
     origin,
+    defaultBranch,
     addedAt: new Date().toISOString(),
   };
   store.repos.push(repo);
@@ -94,32 +129,12 @@ export function addGitRepo(input: AddGitRepoInput): Repo {
   const url = input.url.trim();
   if (!url) throw new Error("Git URL is required");
 
-  const cloneBase = resolveHubPath(loadConfig().paths.clone_dir);
-  if (!fs.existsSync(cloneBase)) fs.mkdirSync(cloneBase, { recursive: true });
-
   const inferredName =
     input.name?.trim() ||
     path.basename(url.replace(/\/+$/, "")).replace(/\.git$/, "");
-  const target = path.join(cloneBase, inferredName);
 
-  if (fs.existsSync(target)) {
-    const gitDir = path.join(target, ".git");
-    if (!fs.existsSync(gitDir)) {
-      throw new Error(`Path exists but is not a git repo: ${target}`);
-    }
-    return registerRepo(target, inferredName, url);
-  }
-
-  const result = spawnSync("git", ["clone", url, target], {
-    stdio: "pipe",
-    encoding: "utf-8",
-  });
-  if (result.status !== 0) {
-    const err = (result.stderr || result.stdout || "git clone failed").trim();
-    throw new Error(`git clone failed: ${err}`);
-  }
-
-  return registerRepo(target, inferredName, url);
+  const defaultBranch = detectDefaultBranch(url);
+  return registerRepo(inferredName, url, defaultBranch);
 }
 
 export function removeRepo(id: string): boolean {

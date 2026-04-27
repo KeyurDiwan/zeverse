@@ -1,5 +1,4 @@
 import { spawn } from "child_process";
-import type { Repo } from "../repos";
 
 function runGit(
   args: string[],
@@ -24,39 +23,39 @@ function runGit(
   });
 }
 
-export async function assertCleanTree(repo: Repo): Promise<void> {
-  const res = await runGit(["status", "--porcelain"], repo.path);
+export async function assertCleanTree(cwd: string): Promise<void> {
+  const res = await runGit(["status", "--porcelain"], cwd);
   if (res.code !== 0) {
-    throw new Error(`git status failed in ${repo.path}: ${res.stderr}`);
+    throw new Error(`git status failed in ${cwd}: ${res.stderr}`);
   }
   const dirty = res.stdout.trim();
   if (dirty) {
     throw new Error(
-      `Working tree is not clean in ${repo.path}. Commit or stash changes before running a workflow.\n${dirty}`
+      `Working tree is not clean in ${cwd}. Commit or stash changes before running a workflow.\n${dirty}`
     );
   }
 }
 
-export async function getCurrentBranch(repo: Repo): Promise<string> {
-  const res = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], repo.path);
+export async function getCurrentBranch(cwd: string): Promise<string> {
+  const res = await runGit(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
   if (res.code !== 0) throw new Error(`Cannot determine current branch: ${res.stderr}`);
   return res.stdout.trim();
 }
 
 export async function createRunBranch(
-  repo: Repo,
+  cwd: string,
   branchName: string
 ): Promise<string> {
-  const previous = await getCurrentBranch(repo);
-  const res = await runGit(["checkout", "-b", branchName], repo.path);
+  const previous = await getCurrentBranch(cwd);
+  const res = await runGit(["checkout", "-b", branchName], cwd);
   if (res.code !== 0) {
     throw new Error(`git checkout -b ${branchName} failed: ${res.stderr}`);
   }
   return previous;
 }
 
-export async function restoreBranch(repo: Repo, branch: string): Promise<void> {
-  await runGit(["checkout", branch], repo.path).catch(() => {});
+export async function restoreBranch(cwd: string, branch: string): Promise<void> {
+  await runGit(["checkout", branch], cwd).catch(() => {});
 }
 
 // Per-repo serialisation lock: only one run at a time per repo.

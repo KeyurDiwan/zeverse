@@ -36,15 +36,16 @@ export async function executeLLMStep(
 export async function executeShellStep(
   step: WorkflowStep,
   ctx: TemplateContext,
-  repo: Repo,
+  repoId: string,
+  sessionPath: string,
   runId: string,
   timeoutMs: number
 ): Promise<string> {
   const command = renderTemplate(step.command ?? "", ctx);
-  const cwd = step.cwd ? path.resolve(repo.path, step.cwd) : repo.path;
+  const cwd = step.cwd ? path.resolve(sessionPath, step.cwd) : sessionPath;
 
-  appendLog(repo.id, runId, `[${step.id}] Running: ${command}`);
-  appendLog(repo.id, runId, `[${step.id}] CWD: ${cwd}`);
+  appendLog(repoId, runId, `[${step.id}] Running: ${command}`);
+  appendLog(repoId, runId, `[${step.id}] CWD: ${cwd}`);
 
   return new Promise<string>((resolve, reject) => {
     const chunks: string[] = [];
@@ -57,7 +58,7 @@ export async function executeShellStep(
     const timeout = setTimeout(() => {
       proc.kill("SIGTERM");
       const msg = `[${step.id}] Killed after ${timeoutMs}ms timeout`;
-      appendLog(repo.id, runId, msg);
+      appendLog(repoId, runId, msg);
       reject(new Error(msg));
     }, timeoutMs);
 
@@ -65,7 +66,7 @@ export async function executeShellStep(
       const text = data.toString();
       chunks.push(text);
       for (const line of text.split("\n").filter(Boolean)) {
-        appendLog(repo.id, runId, `[${step.id}] stdout: ${line}`);
+        appendLog(repoId, runId, `[${step.id}] stdout: ${line}`);
       }
     });
 
@@ -73,14 +74,14 @@ export async function executeShellStep(
       const text = data.toString();
       chunks.push(text);
       for (const line of text.split("\n").filter(Boolean)) {
-        appendLog(repo.id, runId, `[${step.id}] stderr: ${line}`);
+        appendLog(repoId, runId, `[${step.id}] stderr: ${line}`);
       }
     });
 
     proc.on("close", (code) => {
       clearTimeout(timeout);
       const output = chunks.join("");
-      appendLog(repo.id, runId, `[${step.id}] Exited with code ${code}`);
+      appendLog(repoId, runId, `[${step.id}] Exited with code ${code}`);
       if (code !== 0 && !step.continueOnError) {
         reject(new Error(`Command exited with code ${code}\n${output}`));
       } else {
@@ -172,7 +173,8 @@ function resolveSafeRepoPath(
 export async function executeApplyStep(
   step: WorkflowStep,
   ctx: TemplateContext,
-  repo: Repo,
+  repoId: string,
+  sessionPath: string,
   runId: string
 ): Promise<string> {
   const source = renderTemplate(step.content ?? "", ctx);
@@ -180,7 +182,7 @@ export async function executeApplyStep(
   const requireBlocks = step.requireBlocks !== false;
 
   appendLog(
-    repo.id,
+    repoId,
     runId,
     `[${step.id}] Scanned ${source.length} chars; found ${blocks.length} file block(s)`
   );
@@ -199,10 +201,10 @@ export async function executeApplyStep(
 
   const results: string[] = [];
   for (const { path: rel, content } of blocks) {
-    const safe = resolveSafeRepoPath(repo.path, rel);
+    const safe = resolveSafeRepoPath(sessionPath, rel);
     if (!safe.ok) {
       const line = `SKIP ${rel}: ${safe.reason}`;
-      appendLog(repo.id, runId, `[${step.id}] ${line}`);
+      appendLog(repoId, runId, `[${step.id}] ${line}`);
       results.push(line);
       continue;
     }
@@ -219,7 +221,7 @@ export async function executeApplyStep(
     ) {
       const pct = Math.round((newBytes / prevBytes) * 100);
       const line = `SKIP ${rel}: shrink guard — new file is ${newBytes} bytes (${pct}% of ${prevBytes}). Looks like mass content loss. Emit a surgical edit that preserves existing content, or set shrinkGuardMinRatio: 0 on the apply step to override.`;
-      appendLog(repo.id, runId, `[${step.id}] ${line}`);
+      appendLog(repoId, runId, `[${step.id}] ${line}`);
       results.push(line);
       continue;
     }
@@ -232,12 +234,12 @@ export async function executeApplyStep(
       ? `${newBytes} bytes (was ${prevBytes})`
       : `${newBytes} bytes`;
     const line = `${marker} ${rel} (${note})`;
-    appendLog(repo.id, runId, `[${step.id}] ${line}`);
+    appendLog(repoId, runId, `[${step.id}] ${line}`);
     results.push(line);
   }
 
   return [
-    `Applied ${blocks.length} file block(s) to ${repo.path}:`,
+    `Applied ${blocks.length} file block(s) to ${sessionPath}:`,
     ...results,
   ].join("\n") + "\n";
 }
@@ -318,7 +320,8 @@ function runGitApply(
 export async function executePatchStep(
   step: WorkflowStep,
   ctx: TemplateContext,
-  repo: Repo,
+  repoId: string,
+  sessionPath: string,
   runId: string,
   timeoutMs: number
 ): Promise<string> {
@@ -327,7 +330,7 @@ export async function executePatchStep(
   const requireBlocks = step.requireBlocks !== false;
 
   appendLog(
-    repo.id,
+    repoId,
     runId,
     `[${step.id}] Scanned ${source.length} chars; found ${patches.length} patch block(s)`
   );
@@ -339,7 +342,6 @@ export async function executePatchStep(
     return `(${msg})\n`;
   }
 
-  // Pre-screen: refuse if a patch targets forbidden paths.
   const forbiddenRe = /^(?:---|\+\+\+) [ab]\/(?:\.git\/|\.env(?:\.local)?|node_modules\/)/m;
 
   const results: string[] = [];
@@ -350,12 +352,11 @@ export async function executePatchStep(
 
     if (forbiddenRe.test(patch)) {
       const line = `SKIP ${label}: patch touches a forbidden path (.git, .env, node_modules)`;
-      appendLog(repo.id, runId, `[${step.id}] ${line}`);
+      appendLog(repoId, runId, `[${step.id}] ${line}`);
       results.push(line);
       continue;
     }
 
-    // Write to a tmp file so we get nicer error messages from git.
     const tmp = path.join(os.tmpdir(), `archon-patch-${runId}-${i}.patch`);
     fs.writeFileSync(tmp, patch, "utf8");
 
@@ -369,17 +370,17 @@ export async function executePatchStep(
       if (step.stage) baseArgs.push("--index");
       baseArgs.push(tmp);
 
-      const res = await runGitApply(baseArgs, repo.path, "", timeoutMs);
+      const res = await runGitApply(baseArgs, sessionPath, "", timeoutMs);
       if (res.code === 0) {
         applied++;
         const verbose = (res.stderr || res.stdout).trim();
         const line = `applied ${label}${verbose ? `\n  ${verbose.split("\n").join("\n  ")}` : ""}`;
-        appendLog(repo.id, runId, `[${step.id}] applied patch ${label}`);
+        appendLog(repoId, runId, `[${step.id}] applied patch ${label}`);
         results.push(line);
       } else {
         const err = (res.stderr || res.stdout).trim() || `exit code ${res.code}`;
         const line = `FAILED ${label} (exit ${res.code}):\n  ${err.split("\n").join("\n  ")}`;
-        appendLog(repo.id, runId, `[${step.id}] ${line}`);
+        appendLog(repoId, runId, `[${step.id}] ${line}`);
         results.push(line);
       }
     } finally {
@@ -391,7 +392,7 @@ export async function executePatchStep(
     }
   }
 
-  const header = `Applied ${applied}/${patches.length} patch block(s) to ${repo.path}${step.stage ? " (staged)" : ""}:`;
+  const header = `Applied ${applied}/${patches.length} patch block(s) to ${sessionPath}${step.stage ? " (staged)" : ""}:`;
   const body = results.join("\n\n");
   const output = `${header}\n${body}\n`;
 
@@ -504,7 +505,8 @@ export function parseEditBlocks(text: string): EditOp[] {
 export async function executeEditStep(
   step: WorkflowStep,
   ctx: TemplateContext,
-  repo: Repo,
+  repoId: string,
+  sessionPath: string,
   runId: string
 ): Promise<string> {
   const source = renderTemplate(step.content ?? "", ctx);
@@ -512,7 +514,7 @@ export async function executeEditStep(
   const requireBlocks = step.requireBlocks !== false;
 
   appendLog(
-    repo.id,
+    repoId,
     runId,
     `[${step.id}] Scanned ${source.length} chars; found ${ops.length} edit op(s)`
   );
@@ -526,30 +528,27 @@ export async function executeEditStep(
 
   const results: string[] = [];
   let applied = 0;
-  // Cache file contents so multiple edits to the same file compose correctly.
   const fileCache = new Map<string, { content: string; existed: boolean }>();
-  // Only flush files that had at least one successful op applied.
   const dirtyFiles = new Set<string>();
 
   for (let i = 0; i < ops.length; i++) {
     const op = ops[i];
     const label = `#${i + 1} ${op.path} (${op.mode})`;
 
-    // Reject empty SEARCH blocks before touching the filesystem.
     if (op.mode === "search-replace") {
       const needle = op.search ?? "";
       if (!needle) {
         const line = `FAIL ${label}: empty SEARCH block`;
-        appendLog(repo.id, runId, `[${step.id}] ${line}`);
+        appendLog(repoId, runId, `[${step.id}] ${line}`);
         results.push(line);
         continue;
       }
     }
 
-    const safe = resolveSafeRepoPath(repo.path, op.path);
+    const safe = resolveSafeRepoPath(sessionPath, op.path);
     if (!safe.ok) {
       const line = `SKIP ${label}: ${safe.reason}`;
-      appendLog(repo.id, runId, `[${step.id}] ${line}`);
+      appendLog(repoId, runId, `[${step.id}] ${line}`);
       results.push(line);
       continue;
     }
@@ -567,7 +566,7 @@ export async function executeEditStep(
     if (op.mode === "create") {
       if (cached.existed && cached.content.length > 0) {
         const line = `SKIP ${label}: file already exists and has content — use SEARCH/REPLACE instead of CREATE`;
-        appendLog(repo.id, runId, `[${step.id}] ${line}`);
+        appendLog(repoId, runId, `[${step.id}] ${line}`);
         results.push(line);
         continue;
       }
@@ -576,20 +575,16 @@ export async function executeEditStep(
         : op.replace + "\n";
       dirtyFiles.add(safe.full);
       const line = `apply ${label} (${Buffer.byteLength(cached.content, "utf8")} bytes)`;
-      appendLog(repo.id, runId, `[${step.id}] ${line}`);
+      appendLog(repoId, runId, `[${step.id}] ${line}`);
       results.push(line);
       applied++;
       continue;
     }
 
-    // search-replace
     const needle = op.search!;
 
     const idx = cached.content.indexOf(needle);
     if (idx === -1) {
-      // Try forgiving whitespace match: collapse runs of whitespace on both
-      // sides and retry. If that succeeds, splice the original surrounding
-      // content so indentation is preserved from the file.
       const normalize = (s: string) => s.replace(/[ \t]+/g, " ").replace(/\r\n/g, "\n");
       const normHay = normalize(cached.content);
       const normNeedle = normalize(needle);
@@ -597,22 +592,20 @@ export async function executeEditStep(
       if (normIdx === -1) {
         const preview = needle.split("\n").slice(0, 3).join(" / ");
         const line = `FAIL ${label}: SEARCH block not found in file. First lines: "${preview}"`;
-        appendLog(repo.id, runId, `[${step.id}] ${line}`);
+        appendLog(repoId, runId, `[${step.id}] ${line}`);
         results.push(line);
         continue;
       }
-      // Fallback: we matched normalised but not exact. Refuse rather than guess.
       const line = `FAIL ${label}: SEARCH block only matches after whitespace normalisation; copy the exact bytes from the file and retry`;
-      appendLog(repo.id, runId, `[${step.id}] ${line}`);
+      appendLog(repoId, runId, `[${step.id}] ${line}`);
       results.push(line);
       continue;
     }
 
-    // Guard against ambiguous matches.
     const nextIdx = cached.content.indexOf(needle, idx + 1);
     if (nextIdx !== -1) {
       const line = `FAIL ${label}: SEARCH block matches more than once — include more surrounding context so it is unique`;
-      appendLog(repo.id, runId, `[${step.id}] ${line}`);
+      appendLog(repoId, runId, `[${step.id}] ${line}`);
       results.push(line);
       continue;
     }
@@ -621,19 +614,18 @@ export async function executeEditStep(
       cached.content.slice(0, idx) + op.replace + cached.content.slice(idx + needle.length);
     dirtyFiles.add(safe.full);
     const line = `apply ${label}`;
-    appendLog(repo.id, runId, `[${step.id}] ${line}`);
+    appendLog(repoId, runId, `[${step.id}] ${line}`);
     results.push(line);
     applied++;
   }
 
-  // Only flush files that had at least one successful op — never create empty stubs.
   for (const [full, cached] of fileCache) {
     if (!dirtyFiles.has(full)) continue;
     fs.mkdirSync(path.dirname(full), { recursive: true });
     fs.writeFileSync(full, cached.content, "utf8");
   }
 
-  const header = `Applied ${applied}/${ops.length} edit op(s) across ${dirtyFiles.size} file(s) in ${repo.path}:`;
+  const header = `Applied ${applied}/${ops.length} edit op(s) across ${dirtyFiles.size} file(s) in ${sessionPath}:`;
   const body = results.join("\n");
   const output = `${header}\n${body}\n`;
 

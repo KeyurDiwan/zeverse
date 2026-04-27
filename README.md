@@ -19,7 +19,9 @@ Workflows and commands live **inside each target repo** under `.archon/workflows
 
 - Node.js ≥ 20
 - npm ≥ 9
-- git (for cloning imported repos)
+- git (used for ephemeral clones during workflow runs)
+- `gh` CLI (optional — used for PR creation; falls back to GitHub REST API with `GITHUB_TOKEN`)
+- `GITHUB_TOKEN` in `.env` (required for pushing branches and opening PRs on private repos)
 
 ## Quick start
 
@@ -39,9 +41,9 @@ Open http://localhost:5173 and click **+ Import** to register your first repo.
 
 ## Importing repos
 
-Supply a git URL via the UI or API. Archon Hub clones it into `./repos/<name>/`.
-If the target directory already exists and contains a `.git` folder, the existing
-clone is reused without re-cloning.
+Supply a git URL via the UI, Slack, or API. Archon Hub registers the remote URL
+without cloning — each workflow run creates an **ephemeral clone** on demand,
+pushes its results, and cleans up.
 
 The registry is stored in `repos.json`:
 
@@ -51,13 +53,48 @@ The registry is stored in `repos.json`:
     {
       "id": "ubx-ui",
       "name": "ubx-ui",
-      "path": "/Users/you/archon-hub/repos/ubx-ui",
-      "origin": "git@github.com:org/ubx-ui.git",
+      "origin": "https://github.com/freshdesk/ubx-ui",
+      "defaultBranch": "AI-agents-rules-skills",
       "addedAt": "2026-04-22T00:00:00Z"
     }
   ]
 }
 ```
+
+### Migrating from the old format
+
+If you have an existing `repos.json` with `path` fields, run the one-shot
+migration script:
+
+```bash
+npx tsx server/scripts/migrate-repos.ts
+```
+
+This detects each repo's default branch via `git ls-remote`, drops the `path`
+field, and writes the new format. A `.bak` backup is created automatically.
+
+### How runs work (remote-first)
+
+1. **Ephemeral clone** (default): `git clone --depth=50 --branch <base> <origin>`
+   into `state/<repoId>/runs/<runId>/work/`. A run branch `archon/<wf>/<id>` is
+   created on top.
+2. **Managed workspace** (`keepWorkspace: true` in the workflow YAML): a persistent
+   clone under `repos/<id>/` is fetched and hard-reset before each run. Only one
+   run at a time per managed repo.
+3. After steps complete, uncommitted changes are auto-committed, the branch is
+   pushed to origin, and a PR is opened (via `gh` CLI or GitHub REST API).
+4. Ephemeral workspaces are deleted after the run.
+
+### Branch parameter
+
+You can target a specific branch for a run:
+
+- **API:** `POST /api/run-workflow` with `{ baseBranch: "my-branch" }`
+- **UI:** Fill in the "Branch" input above the Run button
+- **Slack:** Append `branch=my-branch` to your message, e.g.
+  `@ArchonBot fix the login bug branch=AI-agents-rules-skills`
+
+Defaults to the repo's `defaultBranch` when omitted.
 
 ## Adding workflows to a target repo
 
@@ -132,7 +169,8 @@ run; the step loops until it renders truthy) with `maxIterations` (default 10).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `isolation` | `"branch"` \| `"none"` | `"branch"` | Per-run git branch isolation. `"branch"` creates `archon/<wf>/<runId>` and serialises runs per repo. |
+| `isolation` | `"branch"` \| `"none"` | `"branch"` | Per-run git branch isolation. `"branch"` creates `archon/<wf>/<runId>`, commits, pushes, and opens a PR. |
+| `keepWorkspace` | `boolean` | `false` | When `true`, reuse a persistent managed clone instead of an ephemeral per-run clone. Faster for large repos but serialises runs. |
 | `gates` | `string[]` | `[]` | Step ids that must be `"success"` for the run to pass. Checked after all steps finish. |
 | `onGateFail` | `{ childWorkflow: string }` | — | Dispatch this child workflow when gates fail (e.g. a "fix" workflow). |
 
@@ -152,7 +190,7 @@ Slack buttons or the API:
 The Slack bot posts Approve/Reject buttons in the run thread. API callers can
 use `POST /api/runs/:id/approve` or `POST /api/runs/:id/reject`.
 
-Shell steps run with `cwd` resolved against the target repo's path (or relative to it, if `cwd:` is set on the step).
+Shell steps run with `cwd` resolved against the session's working tree (the ephemeral or managed clone).
 
 Templating uses `{{inputs.<id>}}` and `{{steps.<id>.output}}`.
 
@@ -161,10 +199,11 @@ Templating uses `{{inputs.<id>}}` and `{{steps.<id>.output}}`.
 | Method | Path                          | Description                             |
 |--------|-------------------------------|-----------------------------------------|
 | GET    | `/api/repos`                  | List imported repos                     |
-| POST   | `/api/repos`                  | Import a repo (`{url}`, optional `{name}`) |
+| POST   | `/api/repos`                  | Register a repo (`{url}`, optional `{name}`) |
 | DELETE | `/api/repos/:id`              | Remove a repo from the registry         |
+| POST   | `/api/repos/:id/refresh-workflows` | Force-refresh the cached workflows for a repo |
 | GET    | `/api/workflows?repoId=`      | List workflows for a repo               |
-| POST   | `/api/run-workflow`           | Start a run (`{repoId, workflow, prompt}`) |
+| POST   | `/api/run-workflow`           | Start a run (`{repoId, workflow, prompt, baseBranch?}`) |
 | GET    | `/api/runs/:id?repoId=`       | Get run state                           |
 | GET    | `/api/logs/:id?repoId=&offset=` | Tail run logs                         |
 | POST   | `/api/gdoc-reply`             | Reply to a Google Doc comment (`{docId, commentId, body}`) |

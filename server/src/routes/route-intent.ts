@@ -103,7 +103,7 @@ routeIntentRoutes.post("/route-intent", async (req: Request, res: Response) => {
         workflow: FALLBACK_WORKFLOW,
         inputs: {},
         confidence: 0,
-        reason: `Repo "${repoId}" not found or missing on disk`,
+        reason: `Repo "${repoId}" not found`,
         fallback: true,
       } satisfies RouteIntentResponse);
       return;

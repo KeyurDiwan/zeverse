@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
-import { addGitRepo, listRepos, removeRepo } from "../repos";
+import { addGitRepo, listRepos, removeRepo, requireRepo } from "../repos";
+import { refreshWorkflowsCache } from "../workflows";
 
 export const repoRoutes = Router();
 
@@ -30,4 +31,14 @@ repoRoutes.delete("/repos/:id", (req: Request<{ id: string }>, res: Response) =>
     return;
   }
   res.json({ ok: true });
+});
+
+repoRoutes.post("/repos/:id/refresh-workflows", (req: Request<{ id: string }>, res: Response) => {
+  try {
+    const repo = requireRepo(req.params.id);
+    refreshWorkflowsCache(repo);
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
 });

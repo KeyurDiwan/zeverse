@@ -29,6 +29,8 @@ export interface RunState {
   createdAt: string;
   finishedAt?: string;
   branch?: string;
+  baseBranch?: string;
+  prUrl?: string;
   gateFailures?: GateFailure[];
 }
 

@@ -3,8 +3,8 @@ const BASE = "/api";
 export interface Repo {
   id: string;
   name: string;
-  path: string;
-  origin?: string;
+  origin: string;
+  defaultBranch: string;
   addedAt: string;
 }
 
@@ -90,12 +90,13 @@ export async function triggerRun(
   repoId: string,
   workflow: string,
   prompt: string,
-  inputs?: Record<string, string>
+  inputs?: Record<string, string>,
+  baseBranch?: string
 ): Promise<string> {
   const res = await fetch(`${BASE}/run-workflow`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repoId, workflow, prompt, inputs }),
+    body: JSON.stringify({ repoId, workflow, prompt, inputs, baseBranch }),
   });
   const data = await json<{ runId: string }>(res);
   return data.runId;

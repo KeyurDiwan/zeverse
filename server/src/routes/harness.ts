@@ -123,7 +123,7 @@ harnessRoutes.post("/harness/route", async (req: Request, res: Response) => {
       res.json({
         type: "clarify",
         repoId: null,
-        question: `Repo "${repoId}" not found or missing on disk. Which repo should I use?`,
+        question: `Repo "${repoId}" not found. Which repo should I use?`,
         missing: ["repoId"],
         confidence: 0,
         reason: `Repo "${repoId}" not found`,
@@ -364,7 +364,7 @@ harnessRoutes.post("/harness/execute", async (req: Request, res: Response) => {
   try {
     const {
       repoId, workflow: workflowName, inputs, prompt,
-      slackUser, channel, surface,
+      slackUser, channel, surface, baseBranch,
     } = req.body ?? {};
 
     if (!repoId) {
@@ -418,7 +418,7 @@ harnessRoutes.post("/harness/execute", async (req: Request, res: Response) => {
     }
 
     const config = loadConfig();
-    const runId = await startRun(repo, workflow, prompt ?? "", mergedInputs, config);
+    const runId = await startRun(repo, workflow, prompt ?? "", mergedInputs, config, baseBranch);
 
     // Audit log
     appendAuditLog({

@@ -3,15 +3,15 @@
     {
       "id": "ubx-ui",
       "name": "ubx-ui",
-      "path": "/Users/kdiwan/Desktop/freshworks/ubx-ui",
       "origin": "https://github.com/freshdesk/ubx-ui",
+      "defaultBranch": "AI-agents-rules-skills",
       "addedAt": "2026-04-22T10:18:02.430Z"
     },
     {
       "id": "freshid-ui-v2",
       "name": "freshid-ui-v2",
-      "path": "/Users/kdiwan/Desktop/freshworks/archon-hub/repos/freshid-ui-v2",
       "origin": "https://github.com/freshdesk/freshid-ui-v2",
+      "defaultBranch": "master",
       "addedAt": "2026-04-22T10:47:44.514Z"
     }
   ]

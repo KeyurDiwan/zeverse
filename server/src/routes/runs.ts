@@ -43,7 +43,7 @@ function autofillInputs(
 
 runRoutes.post("/run-workflow", async (req: Request, res: Response) => {
   try {
-    const { repoId, workflow: workflowName, prompt, inputs } = req.body ?? {};
+    const { repoId, workflow: workflowName, prompt, inputs, baseBranch } = req.body ?? {};
 
     if (!repoId) {
       res.status(400).json({ error: "repoId is required" });
@@ -70,7 +70,7 @@ runRoutes.post("/run-workflow", async (req: Request, res: Response) => {
     };
     const mergedInputs = autofillInputs(workflow.inputs, baseInputs, prompt ?? "");
 
-    const runId = await startRun(repo, workflow, prompt ?? "", mergedInputs, config);
+    const runId = await startRun(repo, workflow, prompt ?? "", mergedInputs, config, baseBranch);
     res.json({ runId, repoId: repo.id });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

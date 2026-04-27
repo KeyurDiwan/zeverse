@@ -453,8 +453,8 @@ async function isRepoAdmin(
 interface AddRepoApiResult {
   id: string;
   name: string;
-  path: string;
-  origin?: string;
+  origin: string;
+  defaultBranch: string;
 }
 
 async function addRepoViaApi(
@@ -517,7 +517,7 @@ async function handleAddRepoMessage(
   await client.chat.postMessage({
     channel,
     thread_ts: threadTs,
-    text: `_Cloning \`${parsed.url}\`... this may take a moment._`,
+    text: `_Registering \`${parsed.url}\`..._`,
   });
 
   const result = await addRepoViaApi(parsed);
@@ -539,8 +539,8 @@ async function handleAddRepoMessage(
       `*Repo added* :white_check_mark:`,
       `ID: \`${repo.id}\``,
       `Name: \`${repo.name}\``,
-      `Origin: ${repo.origin ?? parsed.url}`,
-      `Path: \`${repo.path}\``,
+      `Origin: ${repo.origin}`,
+      `Default branch: \`${repo.defaultBranch}\``,
       `<${ARCHON_UI_URL}|Open Archon Hub>`,
     ].join("\n"),
   });
@@ -1676,6 +1676,7 @@ interface ExecuteOptions {
   slackUser?: string;
   channel?: string;
   surface?: string;
+  baseBranch?: string;
 }
 
 async function callHarnessExecute(
@@ -1685,17 +1686,33 @@ async function callHarnessExecute(
   prompt: string,
   opts: ExecuteOptions = {}
 ): Promise<RunResponse & { missing?: string[] }> {
+  const body: Record<string, any> = {
+    repoId, workflow, inputs, prompt,
+    slackUser: opts.slackUser,
+    channel: opts.channel,
+    surface: opts.surface,
+  };
+  if (opts.baseBranch) body.baseBranch = opts.baseBranch;
+
   const res = await fetch(`${ARCHON_SERVER_URL}/api/harness/execute`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      repoId, workflow, inputs, prompt,
-      slackUser: opts.slackUser,
-      channel: opts.channel,
-      surface: opts.surface,
-    }),
+    body: JSON.stringify(body),
   });
   return archonResponseJson<RunResponse & { missing?: string[] }>(res, "POST /api/harness/execute");
+}
+
+/**
+ * Extract `branch=<name>` from a Slack message and return the cleaned prompt
+ * plus the extracted branch name (if any).
+ */
+function extractBranchFlag(text: string): { prompt: string; baseBranch?: string } {
+  const m = text.match(/\bbranch=(\S+)/i);
+  if (!m) return { prompt: text };
+  return {
+    prompt: text.replace(m[0], "").trim(),
+    baseBranch: m[1],
+  };
 }
 
 // ─── Proposal store (avoid Slack value 2KB limit) ───────────────────────────
@@ -1710,6 +1727,7 @@ interface StoredProposal {
   reason: string;
   channel: string;
   threadTs: string;
+  baseBranch?: string;
 }
 
 const proposalStore = new Map<string, StoredProposal>();
@@ -1942,7 +1960,7 @@ async function pollRunEvents(
 // ─── Unified harness message handler ────────────────────────────────────────
 
 async function handleHarnessMessage(
-  prompt: string,
+  rawPrompt: string,
   channel: string,
   thread_ts: string,
   client: any,
@@ -1950,6 +1968,7 @@ async function handleHarnessMessage(
   surface: "slash" | "mention" | "dm",
   repoIdHint?: string | null
 ): Promise<void> {
+  const { prompt, baseBranch } = extractBranchFlag(rawPrompt);
   const messages = await fetchThreadMessages(channel, thread_ts, client);
   const threadContext = buildGenericThreadContext(messages);
 
@@ -1984,7 +2003,6 @@ async function handleHarnessMessage(
     return;
   }
 
-  // type === "proposal" — always show confirm buttons
   const repoId = route.repoId;
   const workflow = route.workflow ?? DEFAULT_WORKFLOW;
   const inputs = route.inputs ?? {};
@@ -2009,6 +2027,7 @@ async function handleHarnessMessage(
     reason: route.reason,
     channel,
     threadTs: thread_ts,
+    baseBranch,
   });
 
   await client.chat.postMessage({
@@ -2056,7 +2075,7 @@ app.action("harness_run", async ({ action, ack, body, client, logger }) => {
   const slackUser = (body as any).user?.id;
   try {
     const result = await callHarnessExecute(p.repoId, p.workflow, p.inputs, p.prompt, {
-      slackUser, channel, surface: "slack",
+      slackUser, channel, surface: "slack", baseBranch: p.baseBranch,
     });
     if (result.error) {
       const missingMsg = result.missing?.length

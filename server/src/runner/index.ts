@@ -26,7 +26,7 @@ import {
 import { appendLog, appendEvent, RunState, saveState } from "./state";
 import type { TemplateContext } from "./template";
 import { renderTemplate } from "./template";
-import { assertCleanTree, createRunBranch, restoreBranch, runLock } from "./git";
+import { acquireSession, type RepoSession } from "./session";
 
 const activeRuns = new Map<string, RunState>();
 
@@ -66,7 +66,8 @@ export async function startRun(
   workflow: Workflow,
   prompt: string,
   inputs: Record<string, string>,
-  config: ArchonConfig
+  config: ArchonConfig,
+  baseBranch?: string
 ): Promise<string> {
   const runId = uuidv4();
 
@@ -90,11 +91,11 @@ export async function startRun(
   appendLog(
     repo.id,
     runId,
-    `Run ${runId} created for workflow "${workflow.name}" on repo "${repo.id}" (${repo.path})`
+    `Run ${runId} created for workflow "${workflow.name}" on repo "${repo.id}" (${repo.origin})`
   );
   appendEvent(repo.id, runId, { type: "run_created", workflow: workflow.name });
 
-  runWorkflow(runId, repo, workflow, inputs, config).catch((err) => {
+  runWorkflow(runId, repo, workflow, inputs, config, baseBranch).catch((err) => {
     appendLog(repo.id, runId, `Fatal error: ${err.message}`);
   });
 
@@ -110,20 +111,21 @@ async function executeStep(
   repo: Repo,
   runId: string,
   config: ArchonConfig,
-  state: RunState
+  state: RunState,
+  sessionPath: string
 ): Promise<string> {
   switch (step.kind) {
     case "llm":
     case "review":
       return executeLLMStep(step, ctx, llm, repo.id, runId);
     case "shell":
-      return executeShellStep(step, ctx, repo, runId, config.runner.timeout_ms);
+      return executeShellStep(step, ctx, repo.id, sessionPath, runId, config.runner.timeout_ms);
     case "apply":
-      return executeApplyStep(step, ctx, repo, runId);
+      return executeApplyStep(step, ctx, repo.id, sessionPath, runId);
     case "patch":
-      return executePatchStep(step, ctx, repo, runId, config.runner.timeout_ms);
+      return executePatchStep(step, ctx, repo.id, sessionPath, runId, config.runner.timeout_ms);
     case "edit":
-      return executeEditStep(step, ctx, repo, runId);
+      return executeEditStep(step, ctx, repo.id, sessionPath, runId);
     case "gdoc-fetch":
       return executeGDocFetchStep(step, ctx, repo.id, runId);
     case "gdoc-comment":
@@ -211,7 +213,8 @@ async function runStepWithRetryAndLoop(
   runId: string,
   config: ArchonConfig,
   state: RunState,
-  stepIndex: number
+  stepIndex: number,
+  sessionPath: string
 ): Promise<void> {
   const stepState = state.steps[stepIndex];
   const maxRetries = step.retries ?? 0;
@@ -224,7 +227,7 @@ async function runStepWithRetryAndLoop(
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const output = await executeStep(step, ctx, llm, repo, runId, config, state);
+        const output = await executeStep(step, ctx, llm, repo, runId, config, state, sessionPath);
 
         stepState.output = output;
         stepState.status = "success";
@@ -324,7 +327,8 @@ function enforceGates(
   workflow: Workflow,
   state: RunState,
   repo: Repo,
-  config: ArchonConfig
+  config: ArchonConfig,
+  baseBranch?: string
 ): void {
   const gateIds = workflow.gates ?? [];
   if (gateIds.length === 0) return;
@@ -361,7 +365,8 @@ function enforceGates(
       startRun(
         repo, childWf, state.prompt,
         { requirement: state.prompt, parentRunId: state.runId },
-        config
+        config,
+        baseBranch
       ).catch((err) => {
         appendLog(repo.id, state.runId, `on-gate-fail child workflow failed to start: ${err.message}`);
       });
@@ -378,7 +383,8 @@ async function runWorkflow(
   repo: Repo,
   workflow: Workflow,
   inputs: Record<string, string>,
-  config: ArchonConfig
+  config: ArchonConfig,
+  baseBranch?: string
 ): Promise<void> {
   const state = activeRuns.get(runId)!;
   state.status = "running";
@@ -397,114 +403,131 @@ async function runWorkflow(
 
   const useIsolation = workflow.isolation !== "none";
 
-  const doRun = async () => {
-    let previousBranch: string | undefined;
+  let session: RepoSession | undefined;
+  try {
+    session = await acquireSession({
+      repo,
+      baseBranch,
+      runId,
+      workflowName: workflow.name,
+      keepWorkspace: (workflow as any).keepWorkspace === true,
+    });
+    state.branch = session.runBranch;
+    state.baseBranch = session.baseBranch;
+    saveState(state);
+    appendLog(
+      repo.id, runId,
+      `Session acquired: branch=${session.runBranch} base=${session.baseBranch} path=${session.path}`
+    );
+  } catch (err: any) {
+    appendLog(repo.id, runId, `Session acquisition failed: ${err.message}`);
+    state.status = "failed";
+    state.finishedAt = new Date().toISOString();
+    saveState(state);
+    return;
+  }
 
+  try {
+    const ctx: TemplateContext = {
+      inputs: { ...inputs, requirement: inputs.requirement ?? state.prompt },
+      steps: {},
+    };
+
+    for (let i = 0; i < workflow.steps.length; i++) {
+      const step = workflow.steps[i];
+      const stepState = state.steps[i];
+
+      if (step.when) {
+        const rendered = renderTemplate(step.when, ctx).trim();
+        const falsy = !rendered || rendered === "false" || rendered === "no" || rendered === "0";
+        if (falsy) {
+          stepState.status = "success";
+          stepState.output = `(skipped — when condition evaluated to "${rendered}")`;
+          stepState.startedAt = new Date().toISOString();
+          stepState.finishedAt = new Date().toISOString();
+          ctx.steps[step.id] = { output: stepState.output };
+          saveState(state);
+          appendLog(
+            repo.id, runId,
+            `--- Step ${i + 1}/${workflow.steps.length}: ${step.id} SKIPPED (when="${step.when}" → "${rendered}") ---`
+          );
+          appendEvent(repo.id, runId, { type: "step_skipped", stepId: step.id });
+          continue;
+        }
+      }
+
+      stepState.status = "running";
+      stepState.startedAt = new Date().toISOString();
+      saveState(state);
+
+      appendLog(
+        repo.id, runId,
+        `--- Step ${i + 1}/${workflow.steps.length}: ${step.id} (${step.kind}) ---`
+      );
+      appendEvent(repo.id, runId, {
+        type: "step_started",
+        stepId: step.id,
+        stepKind: step.kind,
+        stepIndex: i + 1,
+        totalSteps: workflow.steps.length,
+      });
+
+      await runStepWithRetryAndLoop(step, ctx, llm, repo, runId, config, state, i, session.path);
+
+      if ((state.status as string) === "failed") return;
+    }
+
+    // Gate enforcement
+    enforceGates(workflow, state, repo, config, baseBranch);
+    if ((state.status as string) === "failed") return;
+
+    // Auto-commit + push + open PR for isolated runs
     if (useIsolation) {
       try {
-        await assertCleanTree(repo);
-      } catch (err: any) {
-        appendLog(repo.id, runId, `Isolation check failed: ${err.message}`);
-        state.status = "failed";
-        state.finishedAt = new Date().toISOString();
-        saveState(state);
-        return;
-      }
-
-      const branchName = `archon/${workflow.name}/${runId.slice(0, 8)}`;
-      try {
-        previousBranch = await createRunBranch(repo, branchName);
-        state.branch = branchName;
-        saveState(state);
-        appendLog(repo.id, runId, `Created run branch: ${branchName} (was: ${previousBranch})`);
-      } catch (err: any) {
-        appendLog(repo.id, runId, `Branch creation failed: ${err.message}`);
-        state.status = "failed";
-        state.finishedAt = new Date().toISOString();
-        saveState(state);
-        return;
-      }
-    }
-
-    try {
-      const ctx: TemplateContext = {
-        inputs: { ...inputs, requirement: inputs.requirement ?? state.prompt },
-        steps: {},
-      };
-
-      for (let i = 0; i < workflow.steps.length; i++) {
-        const step = workflow.steps[i];
-        const stepState = state.steps[i];
-
-        // `when` conditional guard
-        if (step.when) {
-          const rendered = renderTemplate(step.when, ctx).trim();
-          const falsy = !rendered || rendered === "false" || rendered === "no" || rendered === "0";
-          if (falsy) {
-            stepState.status = "success";
-            stepState.output = `(skipped — when condition evaluated to "${rendered}")`;
-            stepState.startedAt = new Date().toISOString();
-            stepState.finishedAt = new Date().toISOString();
-            ctx.steps[step.id] = { output: stepState.output };
-            saveState(state);
-            appendLog(
-              repo.id, runId,
-              `--- Step ${i + 1}/${workflow.steps.length}: ${step.id} SKIPPED (when="${step.when}" → "${rendered}") ---`
-            );
-            appendEvent(repo.id, runId, { type: "step_skipped", stepId: step.id });
-            continue;
-          }
+        const hasChanges = await session.hasUncommittedChanges();
+        if (hasChanges) {
+          await session.commitAll(`chore(archon): ${runId.slice(0, 8)} workflow results`);
+          appendLog(repo.id, runId, `Committed changes on branch ${session.runBranch}`);
         }
 
-        stepState.status = "running";
-        stepState.startedAt = new Date().toISOString();
-        saveState(state);
+        await session.pushRunBranch();
+        appendLog(repo.id, runId, `Pushed branch ${session.runBranch} to origin`);
 
-        appendLog(
-          repo.id, runId,
-          `--- Step ${i + 1}/${workflow.steps.length}: ${step.id} (${step.kind}) ---`
-        );
-        appendEvent(repo.id, runId, {
-          type: "step_started",
-          stepId: step.id,
-          stepKind: step.kind,
-          stepIndex: i + 1,
-          totalSteps: workflow.steps.length,
+        const pr = await session.openPR({
+          title: `[archon] ${workflow.name}: ${state.prompt.slice(0, 80)}`,
+          body: [
+            `Automated PR from Archon Hub workflow **${workflow.name}**.`,
+            "",
+            `**Run ID:** \`${runId}\``,
+            `**Base branch:** \`${session.baseBranch}\``,
+            `**Prompt:** ${state.prompt}`,
+          ].join("\n"),
+          baseBranch: session.baseBranch,
         });
-
-        await runStepWithRetryAndLoop(step, ctx, llm, repo, runId, config, state, i);
-
-        // If the step (or retry/loop wrapper) failed the run, bail.
-        if (state.status === "failed") return;
-      }
-
-      // Gate enforcement
-      enforceGates(workflow, state, repo, config);
-      if (state.status === "failed") return;
-
-      state.status = "success";
-      state.finishedAt = new Date().toISOString();
-      saveState(state);
-      appendLog(repo.id, runId, `Run ${runId} completed successfully`);
-      appendEvent(repo.id, runId, { type: "run_finished", status: "success" });
-    } finally {
-      if (useIsolation && previousBranch) {
-        await restoreBranch(repo, previousBranch);
-        appendLog(repo.id, runId, `Restored branch: ${previousBranch}`);
+        state.prUrl = pr.url;
+        appendLog(repo.id, runId, `PR_URL=${pr.url}`);
+      } catch (err: any) {
+        appendLog(repo.id, runId, `Post-run git/PR step failed (non-fatal): ${err.message}`);
       }
     }
-  };
 
-  if (useIsolation) {
-    await runLock(repo.id, doRun);
-  } else {
-    await doRun();
+    state.status = "success";
+    state.finishedAt = new Date().toISOString();
+    saveState(state);
+    appendLog(repo.id, runId, `Run ${runId} completed successfully`);
+    appendEvent(repo.id, runId, { type: "run_finished", status: "success" });
+  } finally {
+    if (session) {
+      await session.cleanup();
+      appendLog(repo.id, runId, `Session cleaned up`);
+    }
   }
 }
 
 /**
  * Execute a single step from a workflow in-memory (no persisted run).
  * Used by /api/harness/route for dry-run routing.
+ * Only llm/review steps are supported (no working tree needed).
  */
 export async function runSingleStep(
   repo: Repo,
@@ -528,11 +551,9 @@ export async function runSingleStep(
     case "llm":
     case "review":
       return executeLLMStep(step, ctx, llm, repo.id, dryRunId);
-    case "shell":
-      return executeShellStep(step, ctx, repo, dryRunId, config.runner.timeout_ms);
     default:
       throw new Error(
-        `runSingleStep only supports llm/review/shell steps, got "${step.kind}"`
+        `runSingleStep only supports llm/review steps, got "${step.kind}"`
       );
   }
 }
