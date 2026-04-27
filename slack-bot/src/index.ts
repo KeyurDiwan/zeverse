@@ -2,8 +2,16 @@ import dotenv from "dotenv";
 import path from "path";
 import fs from "fs";
 
-// override: so repo .env wins over a stray shell ARCHON_SERVER_URL (e.g. Vite 5173).
-dotenv.config({ path: path.resolve(__dirname, "../../.env"), override: true });
+// Load .env: optional cwd file first, then monorepo root last with override
+// so `archon-hub/.env` always wins (fixes empty ARCHON_* when a nested .env was loaded first).
+{
+  const projectEnv = path.resolve(__dirname, "../..", ".env");
+  const cwdEnv = path.join(process.cwd(), ".env");
+  if (fs.existsSync(cwdEnv) && path.resolve(cwdEnv) !== projectEnv) {
+    dotenv.config({ path: cwdEnv, override: true });
+  }
+  dotenv.config({ path: projectEnv, override: true });
+}
 
 import { App, LogLevel } from "@slack/bolt";
 
@@ -85,12 +93,25 @@ async function probeArchonOnStartup(): Promise<void> {
   } catch (e) {
     console.error(`Archon: cannot reach ${base}:`, (e as Error).message);
   }
+  const adminN = (process.env.ARCHON_REPO_ADMIN_USER_IDS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean).length;
+  if (adminN === 0) {
+    console.warn(
+      "Archon: ARCHON_REPO_ADMIN_USER_IDS is empty — add-repo from Slack will be denied. " +
+        "Set it in archon-hub/.env and restart the bot."
+    );
+  } else {
+    console.log(`Archon: add-repo: ${adminN} admin user id(s) in env`);
+  }
 }
 
 // ─── PRD thread tracking ───────────────────────────────────────────────────
 interface PrdQueryInfo {
   index: number;
   body: string;
+  anchor: string;
   commentId: string;
 }
 
@@ -331,6 +352,198 @@ async function inferWorkflowFromServer(repoId: string, prompt: string): Promise<
   } catch {
     return DEFAULT_WORKFLOW;
   }
+}
+
+// ─── Add-repo helpers ───────────────────────────────────────────────────────
+// Read on each check so we always see the current process.env (and avoid stale
+// values if the process loaded env in an unexpected order at startup).
+function getRepoAdminUserIds(): Set<string> {
+  return new Set(
+    (process.env.ARCHON_REPO_ADMIN_USER_IDS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  );
+}
+
+interface AddRepoParseResult {
+  url: string;
+  name?: string;
+}
+
+function unwrapSlackUrl(raw: string): string {
+  const m = raw.match(/^<([^|>]+)(?:\|[^>]*)?>$/);
+  return m ? m[1] : raw;
+}
+
+function parseAddRepoCommand(stripped: string): AddRepoParseResult | null {
+  const m = stripped.match(
+    /^add-repo\s+(<[^>]+>|\S+)(?:\s+(\S+))?\s*$/i
+  );
+  if (!m) return null;
+  const url = unwrapSlackUrl(m[1]);
+  const name = m[2] || undefined;
+  return { url, name };
+}
+
+interface CachedPolicy {
+  allowed_slack_channels: string[];
+  fetchedAt: number;
+}
+
+let policyCache: CachedPolicy | null = null;
+const POLICY_CACHE_TTL_MS = 60_000;
+
+async function fetchPolicyCached(): Promise<CachedPolicy> {
+  if (policyCache && Date.now() - policyCache.fetchedAt < POLICY_CACHE_TTL_MS) {
+    return policyCache;
+  }
+  try {
+    const res = await fetch(`${archonBaseUrl()}/api/policy`);
+    const data = await archonResponseJson<{
+      allowed_repos: string[];
+      allowed_workflows: string[];
+      allowed_slack_channels: string[];
+    }>(res, "GET /api/policy");
+    policyCache = {
+      allowed_slack_channels: data.allowed_slack_channels ?? ["*"],
+      fetchedAt: Date.now(),
+    };
+  } catch {
+    policyCache = { allowed_slack_channels: ["*"], fetchedAt: Date.now() };
+  }
+  return policyCache;
+}
+
+async function isRepoAdmin(
+  slackUser: string,
+  channel: string,
+  isDm: boolean
+): Promise<{ allowed: boolean; reason?: string }> {
+  const admins = getRepoAdminUserIds();
+  if (admins.size === 0) {
+    return {
+      allowed: false,
+      reason:
+        "`ARCHON_REPO_ADMIN_USER_IDS` is not configured. " +
+        "Set it in the **archon-hub** `.env` (repo root) as a comma-separated list of Slack user IDs, then restart the Slack bot process.",
+    };
+  }
+  if (!admins.has(slackUser)) {
+    return {
+      allowed: false,
+      reason: `User <@${slackUser}> is not in \`ARCHON_REPO_ADMIN_USER_IDS\`.`,
+    };
+  }
+  if (!isDm) {
+    const policy = await fetchPolicyCached();
+    if (
+      !policy.allowed_slack_channels.includes("*") &&
+      !policy.allowed_slack_channels.includes(channel)
+    ) {
+      return {
+        allowed: false,
+        reason: `Channel \`${channel}\` is not in \`policy.allowed_slack_channels\`.`,
+      };
+    }
+  }
+  return { allowed: true };
+}
+
+interface AddRepoApiResult {
+  id: string;
+  name: string;
+  path: string;
+  origin?: string;
+}
+
+async function addRepoViaApi(
+  input: AddRepoParseResult
+): Promise<{ repo?: AddRepoApiResult; error?: string }> {
+  try {
+    const res = await fetch(`${archonBaseUrl()}/api/repos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: input.url, name: input.name }),
+    });
+    if (!res.ok) {
+      const data = await archonResponseJson<{ error?: string }>(res, "POST /api/repos");
+      return { error: data.error ?? `HTTP ${res.status}` };
+    }
+    const data = await archonResponseJson<{ repo: AddRepoApiResult }>(
+      res, "POST /api/repos"
+    );
+    return { repo: data.repo };
+  } catch (err: any) {
+    return { error: err.message };
+  }
+}
+
+async function handleAddRepoMessage(
+  rawText: string,
+  channel: string,
+  slackUser: string,
+  threadTs: string,
+  isDm: boolean,
+  client: any,
+  logger: any
+): Promise<void> {
+  const stripped = stripMentions(rawText);
+  const parsed = parseAddRepoCommand(stripped);
+
+  if (!parsed) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: [
+        "*Usage*: `add-repo <git-url> [name]`",
+        "Example: `@ArchonBot add-repo https://github.com/org/my-repo.git`",
+        "Example: `@ArchonBot add-repo https://github.com/org/my-repo.git custom-name`",
+      ].join("\n"),
+    });
+    return;
+  }
+
+  const auth = await isRepoAdmin(slackUser, channel, isDm);
+  if (!auth.allowed) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: `*Not authorized to add repos.*\n${auth.reason}`,
+    });
+    return;
+  }
+
+  await client.chat.postMessage({
+    channel,
+    thread_ts: threadTs,
+    text: `_Cloning \`${parsed.url}\`... this may take a moment._`,
+  });
+
+  const result = await addRepoViaApi(parsed);
+
+  if (result.error) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: `*Failed to add repo*\n${result.error}`,
+    });
+    return;
+  }
+
+  const repo = result.repo!;
+  await client.chat.postMessage({
+    channel,
+    thread_ts: threadTs,
+    text: [
+      `*Repo added* :white_check_mark:`,
+      `ID: \`${repo.id}\``,
+      `Name: \`${repo.name}\``,
+      `Origin: ${repo.origin ?? parsed.url}`,
+      `Path: \`${repo.path}\``,
+      `<${ARCHON_UI_URL}|Open Archon Hub>`,
+    ].join("\n"),
+  });
 }
 
 interface RunResponse {
@@ -720,6 +933,35 @@ app.command("/archon-harness", async ({ command, ack, respond, client, logger })
   );
 });
 
+// ─── /archon-add-repo (register a repo from Slack) ─────────────────────────
+app.command("/archon-add-repo", async ({ command, ack, respond, client, logger }) => {
+  await ack();
+
+  const rawText = (command.text ?? "").trim();
+  if (!rawText) {
+    await respond({
+      response_type: "ephemeral",
+      text: [
+        "*Usage*: `/archon-add-repo <git-url> [name]`",
+        "Example: `/archon-add-repo https://github.com/org/my-repo.git`",
+        "Example: `/archon-add-repo https://github.com/org/my-repo.git custom-name`",
+      ].join("\n"),
+    });
+    return;
+  }
+
+  const thread_ts = command.ts ?? "";
+  await handleAddRepoMessage(
+    `add-repo ${rawText}`,
+    command.channel_id,
+    command.user_id,
+    thread_ts,
+    false,
+    client,
+    logger
+  );
+});
+
 // ─── /archon-prd (PRD analysis) ────────────────────────────────────────────
 
 function isGoogleDocUrl(text: string): boolean {
@@ -839,6 +1081,7 @@ function discoverPrdContextFromState(
   const trackedQueries: PrdQueryInfo[] = queries.map((q, idx) => ({
     index: idx + 1,
     body: q.body,
+    anchor: q.anchor ?? "",
     commentId: commentIds.get(idx + 1) ?? "",
   }));
 
@@ -950,22 +1193,22 @@ async function pollRunAndReply(
     const commentSummary = postQueriesStep?.output ?? "";
 
     const postedMatch = commentSummary.match(/Posted (\d+)\/(\d+) comments/);
+    const skippedMatch = commentSummary.match(/(\d+) skipped as duplicates/);
     const commentLine = postedMatch
-      ? `Google Doc comments: ${postedMatch[1]} of ${postedMatch[2]} posted`
+      ? `Posted ${postedMatch[1]} of ${postedMatch[2]} comments on the Google Doc` +
+        (skippedMatch ? ` (${skippedMatch[1]} skipped as duplicates)` : "")
       : "";
 
     const prUrlMatch = (openPrStep?.output ?? "").match(/PR_URL=(https?:\/\/\S+)/);
-    const prLine = prUrlMatch ? `<${prUrlMatch[1]}|View PR on GitHub>` : "";
 
     const body = [
-      `*PRD Analysis Complete*`,
+      `*PRD Analysis Complete* — \`${repoId}\``,
       "",
       slackReply ?? "_No verdict produced — check the full run._",
       "",
       commentLine,
-      prLine,
-      `<${docUrl}|Open PRD in Google Docs>`,
-      `<${ARCHON_UI_URL}/?run=${runId}|View full analysis in Archon Hub>`,
+      `<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View full analysis in Archon Hub>`,
+      prUrlMatch ? `<${prUrlMatch[1]}|View PR on GitHub>` : "",
       "",
       epicBreakdown ? `*Epic & Tasks*\n${epicBreakdown}` : "",
     ]
@@ -981,6 +1224,7 @@ async function pollRunAndReply(
       const trackedQueries: PrdQueryInfo[] = queries.map((q, idx) => ({
         index: idx + 1,
         body: q.body,
+        anchor: q.anchor ?? "",
         commentId: commentIds.get(idx + 1) ?? "",
       }));
       if (trackedQueries.length > 0) {
@@ -1092,10 +1336,8 @@ app.command("/archon-prd", async ({ command, ack, respond, client, logger }) => 
     await respond({
       response_type: "in_channel",
       text:
-        `*PRD analysis started*\n` +
-        `Repo: \`${inv.repoId}\` | Run: \`${runId}\`\n` +
-        `Doc: ${docUrl}\n` +
-        `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>\n` +
+        `*PRD analysis started* on \`${inv.repoId}\` for <${docUrl}|Open PRD>\n` +
+        `Run: \`${runId}\` | <${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>\n` +
         `_I'll reply in this thread when the analysis is done._` +
         rerunNote,
     });
@@ -1332,16 +1574,6 @@ async function pollThreadSync(
       }
     }
 
-    let summaryPosted = false;
-    if (summary) {
-      const r = await postGDocComment(ctx.docId, summary);
-      if (r.error) {
-        logger.error(`GDoc summary comment failed: ${r.error}`);
-      } else {
-        summaryPosted = true;
-      }
-    }
-
     let editsApplied = 0;
     let editsSkipped = 0;
     if (edits.length > 0) {
@@ -1357,7 +1589,6 @@ async function pollThreadSync(
     const parts: string[] = [`*PRD ${intent === "update" ? "update" : "answer sync"} complete*`, ""];
     if (repliesPosted > 0) parts.push(`Replies posted on Google Doc comments: ${repliesPosted}`);
     if (repliesFailed > 0) parts.push(`Reply failures: ${repliesFailed}`);
-    if (summaryPosted) parts.push(`Summary comment added to Google Doc`);
     if (intent === "update" && edits.length > 0) {
       parts.push(`Suggestions created: ${editsApplied}, skipped: ${editsSkipped}`);
     }
@@ -1494,6 +1725,42 @@ function storeProposal(p: StoredProposal): string {
 // ─── Block Kit confirm UI ───────────────────────────────────────────────────
 
 function proposalBlocks(proposalId: string, p: StoredProposal) {
+  if (p.workflow === "prd-analysis") {
+    const docUrl = p.inputs.docUrl ?? "";
+    const docLink = docUrl ? `<${docUrl}|Open PRD>` : "";
+    return [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: [
+            `*PRD analysis* on \`${p.repoId}\``,
+            docLink,
+            `_Click Run to start the analysis. I'll reply in this thread when done._`,
+          ].filter(Boolean).join("\n"),
+        },
+      },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Run" },
+            style: "primary",
+            action_id: "harness_run",
+            value: proposalId,
+          },
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Cancel" },
+            action_id: "harness_cancel",
+            value: proposalId,
+          },
+        ],
+      },
+    ];
+  }
+
   const altText = p.alternatives.length > 0
     ? `\nAlternatives: ${p.alternatives.map((a) => `\`${a}\``).join(", ")}`
     : "";
@@ -1803,12 +2070,31 @@ app.action("harness_run", async ({ action, ack, body, client, logger }) => {
       return;
     }
     const runId = result.runId ?? "";
-    await client.chat.postMessage({
-      channel,
-      thread_ts,
-      blocks: successBlocks({ repoId: p.repoId, workflow: p.workflow, prompt: p.prompt, runId }),
-      text: `Archon run ${runId} started for ${p.repoId}/${p.workflow}`,
-    });
+
+    if (p.workflow === "prd-analysis") {
+      const docUrl = p.inputs.docUrl ?? "";
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text:
+          `*PRD analysis started* on \`${p.repoId}\` for <${docUrl}|Open PRD>\n` +
+          `Run: \`${runId}\` | <${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>\n` +
+          `_I'll reply in this thread when the analysis is done._`,
+      });
+      pollRunAndReply(runId, p.repoId, channel, thread_ts, docUrl, client, logger).catch(
+        (err) => logger.error("pollRunAndReply (harness_run prd) error:", err)
+      );
+    } else {
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        blocks: successBlocks({ repoId: p.repoId, workflow: p.workflow, prompt: p.prompt, runId }),
+        text: `Archon run ${runId} started for ${p.repoId}/${p.workflow}`,
+      });
+      pollRunAndPostResult(runId, p.repoId, channel, thread_ts, client, logger).catch(
+        (err) => logger.error("pollRunAndPostResult (harness_run) error:", err)
+      );
+    }
 
     saveHarnessThread({
       channel,
@@ -1818,10 +2104,6 @@ app.action("harness_run", async ({ action, ack, body, client, logger }) => {
       lastWorkflow: p.workflow,
       history: [p.prompt],
     });
-
-    pollRunAndPostResult(runId, p.repoId, channel, thread_ts, client, logger).catch(
-      (err) => logger.error("pollRunAndPostResult (harness_run) error:", err)
-    );
     pollRunEvents(runId, p.repoId, channel, thread_ts, client, logger).catch(
       (err) => logger.error("pollRunEvents (harness_run) error:", err)
     );
@@ -1892,12 +2174,31 @@ app.action("harness_pick", async ({ action, ack, body, client, logger }) => {
       return;
     }
     const runId = result.runId ?? "";
-    await client.chat.postMessage({
-      channel,
-      thread_ts: p.threadTs,
-      blocks: successBlocks({ repoId: p.repoId, workflow: newWorkflow, prompt: p.prompt, runId }),
-      text: `Archon run ${runId} started for ${p.repoId}/${newWorkflow}`,
-    });
+
+    if (newWorkflow === "prd-analysis") {
+      const docUrl = p.inputs.docUrl ?? "";
+      await client.chat.postMessage({
+        channel,
+        thread_ts: p.threadTs,
+        text:
+          `*PRD analysis started* on \`${p.repoId}\` for <${docUrl}|Open PRD>\n` +
+          `Run: \`${runId}\` | <${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>\n` +
+          `_I'll reply in this thread when the analysis is done._`,
+      });
+      pollRunAndReply(runId, p.repoId, channel, p.threadTs, docUrl, client, logger).catch(
+        (err) => logger.error("pollRunAndReply (harness_pick prd) error:", err)
+      );
+    } else {
+      await client.chat.postMessage({
+        channel,
+        thread_ts: p.threadTs,
+        blocks: successBlocks({ repoId: p.repoId, workflow: newWorkflow, prompt: p.prompt, runId }),
+        text: `Archon run ${runId} started for ${p.repoId}/${newWorkflow}`,
+      });
+      pollRunAndPostResult(runId, p.repoId, channel, p.threadTs, client, logger).catch(
+        (err) => logger.error("pollRunAndPostResult (harness_pick) error:", err)
+      );
+    }
 
     saveHarnessThread({
       channel,
@@ -1907,10 +2208,6 @@ app.action("harness_pick", async ({ action, ack, body, client, logger }) => {
       lastWorkflow: newWorkflow,
       history: [p.prompt],
     });
-
-    pollRunAndPostResult(runId, p.repoId, channel, p.threadTs, client, logger).catch(
-      (err) => logger.error("pollRunAndPostResult (harness_pick) error:", err)
-    );
     pollRunEvents(runId, p.repoId, channel, p.threadTs, client, logger).catch(
       (err) => logger.error("pollRunEvents (harness_pick) error:", err)
     );
@@ -2048,6 +2345,13 @@ app.event("app_mention", async ({ event, client, logger }) => {
   const thread_ts = (event as any).thread_ts ?? (event as any).ts;
 
   const stripped = stripMentions(text);
+
+  // Intercept add-repo before any other routing
+  const addRepoParsed = parseAddRepoCommand(stripped);
+  if (addRepoParsed) {
+    await handleAddRepoMessage(text, channel, (event as any).user, thread_ts, false, client, logger);
+    return;
+  }
 
   // Check if this mention is inside a tracked PRD thread
   if (thread_ts) {
@@ -2222,31 +2526,58 @@ app.message(async ({ message, client, logger }) => {
   }
 
   const query = ctx.queries.find((q) => q.index === match.queryIndex);
-  if (!query || !query.commentId) {
+  if (!query) {
     await client.chat.postMessage({
       channel: m.channel,
       thread_ts: m.thread_ts,
-      text: `Matched your reply to Q${match.queryIndex}, but I don't have a Google Doc comment ID for it. The suggestion was not posted.`,
+      text: `Matched your reply to Q${match.queryIndex}, but I don't have tracking info for it.`,
     });
     return;
   }
 
-  const result = await postGDocReply(ctx.docId, query.commentId, match.suggestion);
-  if (result.error) {
-    logger.error(`Failed to post GDoc reply: ${result.error}`);
+  if (query.anchor) {
+    const result = await postGDocSuggestEdits(ctx.docId, [
+      { anchor: query.anchor, replacement: `${query.anchor}\n\n[Update — Q${query.index}]: ${match.suggestion}` },
+    ]);
+    if (result.error) {
+      logger.error(`Failed to post GDoc suggestion for Q${match.queryIndex}: ${result.error}`);
+      await client.chat.postMessage({
+        channel: m.channel,
+        thread_ts: m.thread_ts,
+        text: `Matched your reply to Q${match.queryIndex} but failed to post suggestion to Google Doc: ${result.error}`,
+      });
+      return;
+    }
     await client.chat.postMessage({
       channel: m.channel,
       thread_ts: m.thread_ts,
-      text: `Matched your reply to Q${match.queryIndex} but failed to post to Google Doc: ${result.error}`,
+      text:
+        `Posted as a suggested edit on the Google Doc for Q${match.queryIndex}. ` +
+        `Open the doc and click *Accept* to apply it. :white_check_mark:\n` +
+        `<${ctx.docUrl}|Open PRD>`,
     });
-    return;
+  } else {
+    const result = await postGDocComment(
+      ctx.docId,
+      `[Answer to Q${query.index}]: ${match.suggestion}`
+    );
+    if (result.error) {
+      logger.error(`Failed to post GDoc comment for Q${match.queryIndex}: ${result.error}`);
+      await client.chat.postMessage({
+        channel: m.channel,
+        thread_ts: m.thread_ts,
+        text: `Matched your reply to Q${match.queryIndex} but failed to post to Google Doc: ${result.error}`,
+      });
+      return;
+    }
+    await client.chat.postMessage({
+      channel: m.channel,
+      thread_ts: m.thread_ts,
+      text:
+        `Added your answer for Q${match.queryIndex} as a comment on the Google Doc. :white_check_mark:\n` +
+        `<${ctx.docUrl}|Open PRD>`,
+    });
   }
-
-  await client.chat.postMessage({
-    channel: m.channel,
-    thread_ts: m.thread_ts,
-    text: `Posted your answer to Q${match.queryIndex} on the Google Doc. :white_check_mark:`,
-  });
 });
 
 // ─── Direct messages ───────────────────────────────────────────────────────
@@ -2261,6 +2592,14 @@ app.message(async ({ message, client, logger }) => {
   if (!stripped) return;
 
   const thread_ts = m.thread_ts ?? m.ts;
+
+  // Intercept add-repo in DMs
+  const addRepoParsedDm = parseAddRepoCommand(stripped);
+  if (addRepoParsedDm) {
+    await handleAddRepoMessage(text, m.channel, m.user!, thread_ts, true, client, logger);
+    return;
+  }
+
   handleHarnessMessage(stripped, m.channel, thread_ts, client, logger, "dm").catch(
     (err) => logger.error("handleHarnessMessage (dm) error:", err)
   );

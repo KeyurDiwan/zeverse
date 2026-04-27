@@ -2,9 +2,20 @@ import fs from "fs";
 import path from "path";
 import { google, docs_v1, drive_v3 } from "googleapis";
 
-const SA_PATH =
-  process.env.GOOGLE_SERVICE_ACCOUNT_PATH ??
-  path.resolve(__dirname, "../../../config/gcp-service-account.json");
+// Monorepo root (archon-hub/), not process.cwd() — npm workspace dev runs with cwd = server/.
+const ARCHON_HUB_ROOT = path.resolve(__dirname, "../../..");
+
+function resolveServiceAccountPath(): string {
+  const fromEnv = process.env.GOOGLE_SERVICE_ACCOUNT_PATH?.trim();
+  if (fromEnv) {
+    return path.isAbsolute(fromEnv)
+      ? fromEnv
+      : path.resolve(ARCHON_HUB_ROOT, fromEnv);
+  }
+  return path.resolve(ARCHON_HUB_ROOT, "config/gcp-service-account.json");
+}
+
+const SA_PATH = resolveServiceAccountPath();
 
 let _docs: docs_v1.Docs | null = null;
 let _drive: drive_v3.Drive | null = null;
@@ -135,8 +146,9 @@ export async function addComment(
 }
 
 /**
- * Posts a reply on an existing comment. Falls back to a new top-level comment
- * if the target comment has been resolved or deleted.
+ * Posts a reply on an existing comment thread.
+ * Throws if the comment is not found — callers should log and skip rather than
+ * falling back to a new top-level comment, which would be confusing.
  */
 export async function replyToComment(
   docId: string,
@@ -144,21 +156,13 @@ export async function replyToComment(
   body: string
 ): Promise<{ replyId: string }> {
   const { drive } = getClients();
-  try {
-    const res = await drive.replies.create({
-      fileId: docId,
-      commentId,
-      fields: "id",
-      requestBody: { content: body },
-    });
-    return { replyId: res.data.id ?? "" };
-  } catch (err: any) {
-    if (err.code === 404) {
-      const fallback = await addComment(docId, body);
-      return { replyId: fallback.commentId };
-    }
-    throw err;
-  }
+  const res = await drive.replies.create({
+    fileId: docId,
+    commentId,
+    fields: "id",
+    requestBody: { content: body },
+  });
+  return { replyId: res.data.id ?? "" };
 }
 
 export interface SuggestEdit {

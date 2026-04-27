@@ -178,6 +178,7 @@ Templating uses `{{inputs.<id>}}` and `{{steps.<id>.output}}`.
 | POST   | `/api/runs/:id/reject`        | Reject a pending approval gate (`{by, reason?}`) |
 | POST   | `/api/route-intent`           | Legacy shim — delegates to `/api/harness/route`, returns old format |
 | POST   | `/api/smart-reply`            | Legacy shim — delegates to `/api/harness/route`, returns old format |
+| GET    | `/api/policy`                 | Read-only policy config (`allowed_repos`, `allowed_workflows`, `allowed_slack_channels`) |
 | GET    | `/health`                     | Health check                            |
 
 ## Policy & audit
@@ -330,8 +331,9 @@ In your Slack app manifest / settings:
   `im:read`, `im:write`, `channels:history`, `groups:history`
 - **Event Subscriptions**: subscribe the bot to `app_mention` and `message.im`
 - **Interactivity**: enable Interactivity & Shortcuts (for the confirm buttons)
-- **Slash Commands**: `/archon-dev`, `/archon-harness`, `/archon-prd`
+- **Slash Commands**: `/archon-dev`, `/archon-harness`, `/archon-prd`, `/archon-add-repo`
   - `/archon-harness` uses the unified harness router (`/api/harness/route`)
+  - `/archon-add-repo` registers a new repo (admin-only, see below)
 - **Socket Mode**: enabled (set `SLACK_APP_TOKEN` with scope `connections:write`)
 
 Defaults:
@@ -340,6 +342,37 @@ Defaults:
   registry (or auto-selects when only one repo exists).
 - **Workflow**: determined automatically by the harness router (keyword matching
   then LLM). Falls back to `ask` when confidence is low.
+
+### Adding repos from Slack
+
+Authorized users can register new repos directly from Slack without opening the
+UI. Three surfaces are supported:
+
+```
+@ArchonBot add-repo <git-url> [optional-name]
+/archon-add-repo <git-url> [optional-name]
+DM the bot: add-repo <git-url> [optional-name]
+```
+
+Examples:
+
+```
+@ArchonBot add-repo https://github.com/freshdesk/ubx-ui.git
+@ArchonBot add-repo https://github.com/freshdesk/ubx-ui.git my-custom-name
+/archon-add-repo https://github.com/freshdesk/freshid-ui-v2.git
+```
+
+**Authorization:** adding repos is gated by two independent checks:
+
+1. **User allowlist** — `ARCHON_REPO_ADMIN_USER_IDS` in the **Archon Hub repo root**
+   `.env` (same file as `SLACK_BOT_TOKEN` — not a separate `slack-bot/.env` unless
+   you duplicate the line there). Comma-separated Slack user IDs. If empty, no
+   one can add repos from Slack. Restart the bot after changing.
+2. **Channel allowlist** — `policy.allowed_slack_channels` in
+   `config/archon.yaml` (default `["*"]` = any channel). DMs are exempt from
+   the channel check.
+
+Both checks must pass for the operation to proceed.
 
 ### Google Docs integration (for `/archon-prd`)
 
