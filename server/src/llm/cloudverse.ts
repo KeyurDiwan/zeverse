@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { ArchonConfig } from "../config";
+import type { ZeverseConfig } from "../config";
 import type { LLMMessage, LLMProvider, LLMResponse } from "./types";
 
 export class CloudVerseProvider implements LLMProvider {
@@ -8,7 +8,7 @@ export class CloudVerseProvider implements LLMProvider {
   private maxTokens: number;
   private temperature: number;
 
-  constructor(config: ArchonConfig) {
+  constructor(config: ZeverseConfig) {
     const baseURL = config.llm.base_url || process.env.CLOUDVERSE_BASE_URL;
     const apiKey = config.llm.api_key || process.env.CLOUDVERSE_API_KEY;
 

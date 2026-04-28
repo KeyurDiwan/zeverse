@@ -1,9 +1,9 @@
-# Archon Hub
+# Zeverse
 
 Multi-repo AI workflow runner. One control plane (server + UI + Slack bot) that can drive dev, CI/CD, and custom workflows across any number of target repositories.
 
 ```
-archon-hub/
+zeverse/
 ├── config/archon.yaml   # Global LLM + runner config
 ├── repos.json           # Registry of imported repos
 ├── server/              # Express API + workflow runner (port 3100)
@@ -13,7 +13,7 @@ archon-hub/
 └── repos/               # Default workspace for cloned repos
 ```
 
-Workflows and commands live **inside each target repo** under `.archon/workflows/` and `.archon/commands/`. Archon Hub itself is project-agnostic.
+Workflows and commands live **inside each target repo** under `.archon/workflows/` and `.archon/commands/`. Zeverse itself is project-agnostic.
 
 ## Prerequisites
 
@@ -27,7 +27,7 @@ Workflows and commands live **inside each target repo** under `.archon/workflows
 
 ```bash
 cp .env.example .env
-# Edit .env with your CloudVerse API key
+# Edit .env with your CloudVerse API key. Variable names keep the ARCHON_* prefix (historic).
 
 npm run install:all
 
@@ -39,9 +39,11 @@ npm run dev:slack        # optional, only if Slack creds are set
 
 Open http://localhost:5173 and click **+ Import** to register your first repo.
 
+The checkout directory and npm root package name are **`zeverse`** (not `archon-hub`). Rename the repo on GitHub under **Settings → General → Repository name** if needed, point `origin` at the new URL, and rename any local clone with `mv archon-hub zeverse`.
+
 ## Importing repos
 
-Supply a git URL via the UI, Slack, or API. Archon Hub registers the remote URL
+Supply a git URL via the UI, Slack, or API. Zeverse registers the remote URL
 without cloning — each workflow run creates an **ephemeral clone** on demand,
 pushes its results, and cleans up.
 
@@ -92,7 +94,7 @@ You can target a specific branch for a run:
 - **API:** `POST /api/run-workflow` with `{ baseBranch: "my-branch" }`
 - **UI:** Fill in the "Branch" input above the Run button
 - **Slack:** Append `branch=my-branch` to your message, e.g.
-  `@ArchonBot fix the login bug branch=AI-agents-rules-skills`
+  `@ZeverseBot fix the login bug branch=AI-agents-rules-skills`
 
 Defaults to the repo's `defaultBranch` when omitted.
 
@@ -371,11 +373,11 @@ harness pipeline — answers questions directly, asks clarifying questions for
 ambiguous requests, and shows confirm buttons before running workflows:
 
 ```
-@ArchonBot how does the billing router work?          # answered directly via LLM
-@ArchonBot fix the login bug                          # proposes fix-bug → [Run] [Pick another] [Cancel]
-@ArchonBot fix something                              # asks "Which repo / what exactly is broken?"
-@ArchonBot ubx-ui pr-review fix flaky login test      # proposes pr-review → confirm buttons
-@ArchonBot help                                       # friendly greeting + capabilities
+@ZeverseBot how does the billing router work?          # answered directly via LLM
+@ZeverseBot fix the login bug                          # proposes fix-bug → [Run] [Pick another] [Cancel]
+@ZeverseBot fix something                              # asks "Which repo / what exactly is broken?"
+@ZeverseBot ubx-ui pr-review fix flaky login test      # proposes pr-review → confirm buttons
+@ZeverseBot help                                       # friendly greeting + capabilities
 ```
 
 ### 2a. @mentions inside PRD threads
@@ -384,8 +386,8 @@ When the bot is @mentioned inside a Slack thread that was started by `/archon-pr
 it recognises special commands that sync the thread discussion back to the Google Doc:
 
 ```
-@ArchonBot update the PRD doc     # reads thread, posts answers + summary comment + tracked-change suggestions
-@ArchonBot answer this            # reads thread, posts answers + summary comment (no doc body edits)
+@ZeverseBot update the PRD doc     # reads thread, posts answers + summary comment + tracked-change suggestions
+@ZeverseBot answer this            # reads thread, posts answers + summary comment (no doc body edits)
 ```
 
 **"answer this"** reads the full thread history, matches answers to the original
@@ -441,7 +443,7 @@ Authorized users can register new repos directly from Slack without opening the
 UI. Three surfaces are supported:
 
 ```
-@ArchonBot add-repo <git-url> [optional-name]
+@ZeverseBot add-repo <git-url> [optional-name]
 /archon-add-repo <git-url> [optional-name]
 DM the bot: add-repo <git-url> [optional-name]
 ```
@@ -449,14 +451,14 @@ DM the bot: add-repo <git-url> [optional-name]
 Examples:
 
 ```
-@ArchonBot add-repo https://github.com/freshdesk/ubx-ui.git
-@ArchonBot add-repo https://github.com/freshdesk/ubx-ui.git my-custom-name
+@ZeverseBot add-repo https://github.com/freshdesk/ubx-ui.git
+@ZeverseBot add-repo https://github.com/freshdesk/ubx-ui.git my-custom-name
 /archon-add-repo https://github.com/freshdesk/freshid-ui-v2.git
 ```
 
 **Authorization:** adding repos is gated by two independent checks:
 
-1. **User allowlist** — `ARCHON_REPO_ADMIN_USER_IDS` in the **Archon Hub repo root**
+1. **User allowlist** — `ARCHON_REPO_ADMIN_USER_IDS` in the **Zeverse repo root**
    `.env` (same file as `SLACK_BOT_TOKEN` — not a separate `slack-bot/.env` unless
    you duplicate the line there). Comma-separated Slack user IDs. If empty, no
    one can add repos from Slack. Restart the bot after changing.
@@ -475,7 +477,7 @@ Both checks must pass for the operation to proceed.
    (e.g. `your-sa@your-project.iam.gserviceaccount.com`).
 
 **Access level guidance:**
-- **Commenter** (recommended for `@ArchonBot update the PRD doc`): edits land as
+- **Commenter** (recommended for `@ZeverseBot update the PRD doc`): edits land as
   tracked-change suggestions the PRD owner can accept/reject. Comments and replies
   still work normally.
 - **Editor**: all operations work, but `update` edits become direct writes instead

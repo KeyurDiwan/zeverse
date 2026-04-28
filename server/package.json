@@ -1,8 +1,8 @@
 {
-  "name": "archon-hub-server",
+  "name": "zeverse-server",
   "version": "1.0.0",
   "private": true,
-  "description": "Archon Hub API server — multi-repo AI workflow runner",
+  "description": "Zeverse API server — multi-repo AI workflow runner",
   "scripts": {
     "dev": "ts-node --transpile-only src/index.ts",
     "build": "tsc",

@@ -2,17 +2,17 @@ import fs from "fs";
 import path from "path";
 import { google, docs_v1, drive_v3 } from "googleapis";
 
-// Monorepo root (archon-hub/), not process.cwd() — npm workspace dev runs with cwd = server/.
-const ARCHON_HUB_ROOT = path.resolve(__dirname, "../../..");
+// Monorepo root, not process.cwd() — npm workspace dev runs with cwd = server/.
+const MONOREPO_ROOT = path.resolve(__dirname, "../../..");
 
 function resolveServiceAccountPath(): string {
   const fromEnv = process.env.GOOGLE_SERVICE_ACCOUNT_PATH?.trim();
   if (fromEnv) {
     return path.isAbsolute(fromEnv)
       ? fromEnv
-      : path.resolve(ARCHON_HUB_ROOT, fromEnv);
+      : path.resolve(MONOREPO_ROOT, fromEnv);
   }
-  return path.resolve(ARCHON_HUB_ROOT, "config/gcp-service-account.json");
+  return path.resolve(MONOREPO_ROOT, "config/gcp-service-account.json");
 }
 
 const SA_PATH = resolveServiceAccountPath();

@@ -31,8 +31,8 @@ const STATUS_COLORS: Record<RunStatus, string> = {
   failed: "var(--error)",
 };
 
-const SELECTED_REPO_KEY = "archon-hub:selected-repo";
-const SELECTED_WORKFLOW_KEY = "archon-hub:selected-workflow";
+const SELECTED_REPO_KEY = "zeverse:selected-repo";
+const SELECTED_WORKFLOW_KEY = "zeverse:selected-workflow";
 
 // Input ids that should render as multi-line textareas rather than single-line inputs.
 const LONG_INPUT_IDS = new Set([
@@ -95,7 +95,7 @@ export default function App() {
         return list[0]?.id ?? null;
       });
     } catch {
-      setError("Failed to load repos. Is archon-hub-server running?");
+      setError("Failed to load repos. Is zeverse-server running?");
     }
   }, []);
 
@@ -286,7 +286,7 @@ export default function App() {
 
   const handleRemoveRepo = useCallback(
     async (id: string) => {
-      if (!confirm("Remove this repo from Archon Hub?")) {
+      if (!confirm("Remove this repo from Zeverse?")) {
         return;
       }
       try {
@@ -333,7 +333,7 @@ export default function App() {
       >
         <div style={{ padding: "20px 16px", borderBottom: "1px solid var(--border)" }}>
           <h1 style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.02em" }}>
-            Archon Hub
+            Zeverse
           </h1>
           <p style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
             Multi-repo workflow runner

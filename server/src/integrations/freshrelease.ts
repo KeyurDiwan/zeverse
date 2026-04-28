@@ -219,7 +219,7 @@ export async function addFRComment(
   if (body.length > FR_COMMENT_BODY_MAX) {
     body =
       body.slice(0, FR_COMMENT_BODY_MAX - 120) +
-      "\n\n…(body truncated to fit FR limits)…\n_See Archon Hub for the full run output._";
+      "\n\n…(body truncated to fit FR limits)…\n_See Zeverse for the full run output._";
   }
 
   const res = await curlJson(

@@ -1,8 +1,8 @@
 {
-  "name": "archon-hub-slack-bot",
+  "name": "zeverse-slack-bot",
   "version": "1.0.0",
   "private": true,
-  "description": "Slack bot for triggering Archon Hub workflows across multiple repos",
+  "description": "Slack bot for triggering Zeverse workflows across multiple repos",
   "scripts": {
     "dev": "ts-node --transpile-only src/index.ts",
     "build": "tsc",

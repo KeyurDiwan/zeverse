@@ -22,7 +22,7 @@ npm-debug.log*
 # Google service account credentials
 config/gcp-service-account.json
 
-# Archon Hub runtime
+# Zeverse runtime
 state/*
 !state/.gitkeep
 

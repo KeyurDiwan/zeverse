@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Verifies the same base URL the Slack bot uses (ARCHON_SERVER_URL) returns JSON from the API.
- * Run from repo root: npm run check:archon
+ * Run from repo root: npm run check:zeverse
  */
 const path = require("path");
 const http = require("http");
@@ -48,7 +48,7 @@ async function check(pathname, needJson) {
       console.error(
         "\n  ERROR: got HTML, not JSON. The Slack bot will fail with 'Unexpected token'." +
           "\n  Fix: set ARCHON_SERVER_URL in .env to the API, e.g. http://127.0.0.1:3100" +
-          "\n  (not the Vite UI on 5173). Unset a wrong shell var: env -u ARCHON_SERVER_URL npm run check:archon"
+          "\n  (not the Vite UI on 5173). Unset a wrong shell var: env -u ARCHON_SERVER_URL npm run check:zeverse"
       );
       return false;
     }

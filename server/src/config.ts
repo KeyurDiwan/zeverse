@@ -8,7 +8,7 @@ export interface PolicyConfig {
   allowed_slack_channels: string[];
 }
 
-export interface ArchonConfig {
+export interface ZeverseConfig {
   llm: {
     provider: string;
     model: string;
@@ -47,16 +47,16 @@ function resolveConfigValues(obj: Record<string, any>): any {
   return result;
 }
 
-// Archon Hub root — two levels up from server/src (server/ -> archon-hub/).
+// Monorepo root — two levels up from server/src (server/ -> repo root/).
 export function getHubRoot(): string {
   return path.resolve(__dirname, "../..");
 }
 
-export function loadConfig(): ArchonConfig {
+export function loadConfig(): ZeverseConfig {
   const configPath = path.join(getHubRoot(), "config", "archon.yaml");
   const raw = fs.readFileSync(configPath, "utf-8");
   const parsed = YAML.parse(raw);
-  return resolveConfigValues(parsed) as ArchonConfig;
+  return resolveConfigValues(parsed) as ZeverseConfig;
 }
 
 export function resolveHubPath(relative: string): string {

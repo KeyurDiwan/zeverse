@@ -26,17 +26,17 @@ function buildFrAnalyzeCommentBody(raw: string, excerpt: "full" | "summary" | un
   const section = extractFrAnalysisSummarySection(raw);
   if (section) {
     return [
-      "## Archon: fr-analyze",
+      "## Zeverse: fr-analyze",
       "",
       section,
       "",
-      "_Full analysis is in the Archon Hub run log._",
+      "_Full analysis is in the Zeverse run log._",
     ].join("\n");
   }
   // Model omitted "## Summary" — post a short prefix + trimmed analysis head
   const head = raw.length > 12_000 ? `${raw.slice(0, 12_000).trim()}\n\n…` : raw;
   return [
-    "## Archon: fr-analyze",
+    "## Zeverse: fr-analyze",
     "",
     "_No `## Summary` section was found; posting analysis excerpt._",
     "",

@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import type { ArchonConfig } from "../config";
+import type { ZeverseConfig } from "../config";
 import { createLLMProvider, LLMProvider } from "../llm";
 import type { Workflow, WorkflowStep } from "../workflows";
 import type { Repo } from "../repos";
@@ -98,7 +98,7 @@ export async function startRun(
   workflow: Workflow,
   prompt: string,
   inputs: Record<string, string>,
-  config: ArchonConfig,
+  config: ZeverseConfig,
   baseBranch?: string
 ): Promise<string> {
   const runId = uuidv4();
@@ -142,7 +142,7 @@ async function executeStep(
   llm: LLMProvider,
   repo: Repo,
   runId: string,
-  config: ArchonConfig,
+  config: ZeverseConfig,
   state: RunState,
   sessionPath: string
 ): Promise<string> {
@@ -187,7 +187,7 @@ async function executeStep(
       return executeHarAnalyzeStep(step, ctx, repo.id, runId);
     default:
       throw new Error(
-        `Unknown step kind: ${step.kind}. If you pulled a newer Archon Hub, run "npm run build" in server/ (or use "npm run dev") and restart.`
+        `Unknown step kind: ${step.kind}. If you pulled a newer Zeverse, run "npm run build" in server/ (or use "npm run dev") and restart.`
       );
   }
 }
@@ -307,7 +307,7 @@ async function runStepWithRetryAndLoop(
   llm: LLMProvider,
   repo: Repo,
   runId: string,
-  config: ArchonConfig,
+  config: ZeverseConfig,
   state: RunState,
   stepIndex: number,
   sessionPath: string
@@ -423,7 +423,7 @@ function enforceGates(
   workflow: Workflow,
   state: RunState,
   repo: Repo,
-  config: ArchonConfig,
+  config: ZeverseConfig,
   baseBranch?: string
 ): void {
   const gateIds = workflow.gates ?? [];
@@ -479,7 +479,7 @@ async function runWorkflow(
   repo: Repo,
   workflow: Workflow,
   inputs: Record<string, string>,
-  config: ArchonConfig,
+  config: ZeverseConfig,
   baseBranch?: string
 ): Promise<void> {
   const state = activeRuns.get(runId)!;
@@ -598,7 +598,7 @@ async function runWorkflow(
               `**Base branch:** \`${session.baseBranch}\``,
             ].join("\n")
           : [
-              `Automated PR from Archon Hub workflow **${workflow.name}**.`,
+              `Automated PR from Zeverse workflow **${workflow.name}**.`,
               "",
               `**Run ID:** \`${runId}\``,
               `**Base branch:** \`${session.baseBranch}\``,
@@ -640,7 +640,7 @@ export async function runSingleStep(
   workflow: Workflow,
   stepId: string,
   inputs: Record<string, string>,
-  config: ArchonConfig
+  config: ZeverseConfig
 ): Promise<string> {
   const step = workflow.steps.find((s) => s.id === stepId);
   if (!step) throw new Error(`Step "${stepId}" not found in workflow "${workflow.name}"`);

@@ -3,7 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import type { LLMProvider } from "../llm";
-import type { ArchonConfig } from "../config";
+import type { ZeverseConfig } from "../config";
 import type { WorkflowStep, Workflow } from "../workflows";
 import { findWorkflow } from "../workflows";
 import type { Repo } from "../repos";
@@ -727,13 +727,13 @@ export async function executeWorkflowStep(
   repo: Repo,
   repoId: string,
   runId: string,
-  config: ArchonConfig,
+  config: ZeverseConfig,
   startRunFn: (
     repo: Repo,
     workflow: Workflow,
     prompt: string,
     inputs: Record<string, string>,
-    config: ArchonConfig
+    config: ZeverseConfig
   ) => Promise<string>,
   getRunStateFn: (childRunId: string) => { status: string; steps: Array<{ id: string; status: string; output: string }> } | undefined
 ): Promise<string> {

@@ -57,7 +57,7 @@ export default function AddRepoModal({ onClose, onAdded }: Props) {
         <div>
           <h2 style={{ fontSize: 18, fontWeight: 700 }}>Import repo</h2>
           <p style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 4 }}>
-            Register a remote git repository with Archon Hub. No local clone is
+            Register a remote git repository with Zeverse. No local clone is
             required — each workflow run fetches the repo from GitHub on demand.
           </p>
         </div>

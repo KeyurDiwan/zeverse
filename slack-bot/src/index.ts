@@ -3,7 +3,7 @@ import path from "path";
 import fs from "fs";
 
 // Load .env: optional cwd file first, then monorepo root last with override
-// so `archon-hub/.env` always wins (fixes empty ARCHON_* when a nested .env was loaded first).
+// so `.env` at the repo root always wins (fixes empty ARCHON_* when a nested .env was loaded first).
 {
   const projectEnv = path.resolve(__dirname, "../..", ".env");
   const cwdEnv = path.join(process.cwd(), ".env");
@@ -21,20 +21,20 @@ const DEFAULT_REPO_ID = process.env.ARCHON_DEFAULT_REPO_ID ?? "";
 const DEFAULT_WORKFLOW = process.env.ARCHON_DEFAULT_WORKFLOW ?? "dev";
 const HUB_STATE_DIR = path.resolve(__dirname, "../../state");
 
-/** Archon API returns JSON; HTML means wrong URL (UI/static host) or proxy misconfiguration. */
-async function archonResponseJson<T>(res: Response, what: string): Promise<T> {
+/** Zeverse API returns JSON; HTML means wrong URL (UI/static host) or proxy misconfiguration. */
+async function zeverseResponseJson<T>(res: Response, what: string): Promise<T> {
   const text = await res.text();
   const t = text.trim();
   if (t.startsWith("<!DOCTYPE") || t.startsWith("<!doctype") || t.startsWith("<html")) {
     throw new Error(
-      `Archon server returned a web page instead of JSON (${what}, HTTP ${res.status}). ` +
+      `Zeverse server returned a web page instead of JSON (${what}, HTTP ${res.status}). ` +
         `Set ARCHON_SERVER_URL in .env to the API (e.g. http://127.0.0.1:3100), not the Vite UI, and ensure the server is running.`
     );
   }
   if (t.length > 0 && t[0] !== "{" && t[0] !== "[") {
     const preview = t.length > 200 ? `${t.slice(0, 200)}…` : t;
     throw new Error(
-      `Archon server did not return JSON (${what}, HTTP ${res.status}): ${preview}`
+      `Zeverse server did not return JSON (${what}, HTTP ${res.status}): ${preview}`
     );
   }
   try {
@@ -46,27 +46,27 @@ async function archonResponseJson<T>(res: Response, what: string): Promise<T> {
       (text.includes("<!DOCTYPE") || text.includes("<html") || text.trim().startsWith("<"))
     ) {
       throw new Error(
-        `Archon returned a web page, not JSON (${what}, HTTP ${res.status}). ` +
+        `Zeverse returned a web page, not JSON (${what}, HTTP ${res.status}). ` +
           `Point ARCHON_SERVER_URL at the API (http://127.0.0.1:3100), not the Vite UI, ` +
           `and unset a wrong value in the shell: env -u ARCHON_SERVER_URL npm run dev:slack`
       );
     }
     throw new Error(
-      `Invalid JSON from Archon ${what} (HTTP ${res.status}): ${msg}`
+      `Invalid JSON from Zeverse ${what} (HTTP ${res.status}): ${msg}`
     );
   }
 }
 
-function archonBaseUrl(): string {
+function zeverseBaseUrl(): string {
   return ARCHON_SERVER_URL.replace(/\/$/, "");
 }
 
 /** Warn at boot if the API URL looks wrong or returns HTML. */
-async function probeArchonOnStartup(): Promise<void> {
-  const base = archonBaseUrl();
+async function probeZeverseOnStartup(): Promise<void> {
+  const base = zeverseBaseUrl();
   if (/^https?:\/\/127\.0\.0\.1:5173|^https?:\/\/localhost:5173/.test(base)) {
     console.warn(
-      "Archon: ARCHON_SERVER_URL is the Vite dev URL (5173). The bot needs the API on 3100. Set ARCHON_SERVER_URL=http://127.0.0.1:3100 in .env"
+      "Zeverse: ARCHON_SERVER_URL is the Vite dev URL (5173). The bot needs the API on 3100. Set ARCHON_SERVER_URL=http://127.0.0.1:3100 in .env"
     );
   }
   try {
@@ -75,8 +75,8 @@ async function probeArchonOnStartup(): Promise<void> {
     const t = text.trim();
     if (t.startsWith("<!DOCTYPE") || t.startsWith("<!doctype") || t.startsWith("<html")) {
       console.error(
-        "Archon: GET /api/repos returned HTML — ARCHON_SERVER_URL is wrong, or the shell is overriding .env. " +
-          "Use the API: http://127.0.0.1:3100. Test with: npm run check:archon"
+        "Zeverse: GET /api/repos returned HTML — ARCHON_SERVER_URL is wrong, or the shell is overriding .env. " +
+          "Use the API: http://127.0.0.1:3100. Test with: npm run check:zeverse"
       );
       return;
     }
@@ -84,14 +84,14 @@ async function probeArchonOnStartup(): Promise<void> {
       JSON.parse(text);
     } catch {
       console.error(
-        `Archon: /api/repos body is not valid JSON (HTTP ${res.status}):`,
+        `Zeverse: /api/repos body is not valid JSON (HTTP ${res.status}):`,
         text.slice(0, 200)
       );
       return;
     }
-    console.log(`Archon: API OK at ${base} (GET /api/repos → ${res.status})`);
+    console.log(`Zeverse: API OK at ${base} (GET /api/repos → ${res.status})`);
   } catch (e) {
-    console.error(`Archon: cannot reach ${base}:`, (e as Error).message);
+    console.error(`Zeverse: cannot reach ${base}:`, (e as Error).message);
   }
   const adminN = (process.env.ARCHON_REPO_ADMIN_USER_IDS ?? "")
     .split(",")
@@ -99,11 +99,11 @@ async function probeArchonOnStartup(): Promise<void> {
     .filter(Boolean).length;
   if (adminN === 0) {
     console.warn(
-      "Archon: ARCHON_REPO_ADMIN_USER_IDS is empty — add-repo from Slack will be denied. " +
-        "Set it in archon-hub/.env and restart the bot."
+      "Zeverse: ARCHON_REPO_ADMIN_USER_IDS is empty — add-repo from Slack will be denied. " +
+        "Set it in `.env` at the repo root and restart the bot."
     );
   } else {
-    console.log(`Archon: add-repo: ${adminN} admin user id(s) in env`);
+    console.log(`Zeverse: add-repo: ${adminN} admin user id(s) in env`);
   }
 }
 
@@ -268,7 +268,7 @@ async function routeIntent(prompt: string, repoId?: string): Promise<RouteIntent
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return archonResponseJson<RouteIntentResult>(res, "POST /api/route-intent");
+  return zeverseResponseJson<RouteIntentResult>(res, "POST /api/route-intent");
 }
 
 const app = new App({
@@ -297,7 +297,7 @@ interface Repo {
 async function listRepoIds(): Promise<Set<string>> {
   try {
     const res = await fetch(`${ARCHON_SERVER_URL}/api/repos`);
-    const data = await archonResponseJson<{ repos: Repo[] }>(res, "GET /api/repos");
+    const data = await zeverseResponseJson<{ repos: Repo[] }>(res, "GET /api/repos");
     return new Set(data.repos.map((r) => r.id));
   } catch {
     return new Set();
@@ -309,7 +309,7 @@ async function listWorkflowNames(repoId: string): Promise<Set<string>> {
     const res = await fetch(
       `${ARCHON_SERVER_URL}/api/workflows?repoId=${encodeURIComponent(repoId)}`
     );
-    const data = await archonResponseJson<{ workflows: { name: string }[] }>(
+    const data = await zeverseResponseJson<{ workflows: { name: string }[] }>(
       res,
       "GET /api/workflows"
     );
@@ -326,7 +326,7 @@ async function inferRepoIdFromPrompt(prompt: string): Promise<string | null> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt }),
     });
-    const data = await archonResponseJson<{ repoId: string | null; reason?: string }>(
+    const data = await zeverseResponseJson<{ repoId: string | null; reason?: string }>(
       res,
       "POST /api/infer-repo"
     );
@@ -343,7 +343,7 @@ async function inferWorkflowFromServer(repoId: string, prompt: string): Promise<
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repoId, prompt }),
     });
-    const data = await archonResponseJson<{ workflow?: string }>(res, "POST /api/infer-workflow");
+    const data = await zeverseResponseJson<{ workflow?: string }>(res, "POST /api/infer-workflow");
     if (typeof data.workflow === "string") return data.workflow;
   } catch {
     // fall through
@@ -403,8 +403,8 @@ async function fetchPolicyCached(): Promise<CachedPolicy> {
     return policyCache;
   }
   try {
-    const res = await fetch(`${archonBaseUrl()}/api/policy`);
-    const data = await archonResponseJson<{
+    const res = await fetch(`${zeverseBaseUrl()}/api/policy`);
+    const data = await zeverseResponseJson<{
       allowed_repos: string[];
       allowed_workflows: string[];
       allowed_slack_channels: string[];
@@ -430,7 +430,7 @@ async function isRepoAdmin(
       allowed: false,
       reason:
         "`ARCHON_REPO_ADMIN_USER_IDS` is not configured. " +
-        "Set it in the **archon-hub** `.env` (repo root) as a comma-separated list of Slack user IDs, then restart the Slack bot process.",
+        "Set it in the **repo root** `.env` as a comma-separated list of Slack user IDs, then restart the Slack bot process.",
     };
   }
   if (!admins.has(slackUser)) {
@@ -465,16 +465,16 @@ async function addRepoViaApi(
   input: AddRepoParseResult
 ): Promise<{ repo?: AddRepoApiResult; error?: string }> {
   try {
-    const res = await fetch(`${archonBaseUrl()}/api/repos`, {
+    const res = await fetch(`${zeverseBaseUrl()}/api/repos`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url: input.url, name: input.name }),
     });
     if (!res.ok) {
-      const data = await archonResponseJson<{ error?: string }>(res, "POST /api/repos");
+      const data = await zeverseResponseJson<{ error?: string }>(res, "POST /api/repos");
       return { error: data.error ?? `HTTP ${res.status}` };
     }
-    const data = await archonResponseJson<{ repo: AddRepoApiResult }>(
+    const data = await zeverseResponseJson<{ repo: AddRepoApiResult }>(
       res, "POST /api/repos"
     );
     return { repo: data.repo };
@@ -501,8 +501,8 @@ async function handleAddRepoMessage(
       thread_ts: threadTs,
       text: [
         "*Usage*: `add-repo <git-url> [name]`",
-        "Example: `@ArchonBot add-repo https://github.com/org/my-repo.git`",
-        "Example: `@ArchonBot add-repo https://github.com/org/my-repo.git custom-name`",
+        "Example: `@ZeverseBot add-repo https://github.com/org/my-repo.git`",
+        "Example: `@ZeverseBot add-repo https://github.com/org/my-repo.git custom-name`",
       ].join("\n"),
     });
     return;
@@ -545,7 +545,7 @@ async function handleAddRepoMessage(
       `Name: \`${repo.name}\``,
       `Origin: ${repo.origin}`,
       `Default branch: \`${repo.defaultBranch}\``,
-      `<${ARCHON_UI_URL}|Open Archon Hub>`,
+      `<${ARCHON_UI_URL}|Open Zeverse>`,
     ].join("\n"),
     blocks: [
       {
@@ -572,7 +572,7 @@ async function handleAddRepoMessage(
           },
           {
             type: "button",
-            text: { type: "plain_text", text: "Open Archon Hub" },
+            text: { type: "plain_text", text: "Open Zeverse" },
             url: ARCHON_UI_URL,
             action_id: "open_hub_link",
           },
@@ -598,7 +598,7 @@ async function triggerWorkflow(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ repoId, workflow: workflowName, prompt, inputs }),
   });
-  return archonResponseJson<RunResponse>(res, "POST /api/run-workflow");
+  return zeverseResponseJson<RunResponse>(res, "POST /api/run-workflow");
 }
 
 interface Invocation {
@@ -745,17 +745,17 @@ async function formatRunFailureForSlack(
     }
   } else {
     lines.push(
-      "_No step-level error on record._ Common causes: **LLM init** (check `config/archon.yaml` and env), **git isolation** (uncommitted changes on the server’s repo copy), or **branch creation** failed. *Log tail* or Archon Hub has the line that explains it."
+      "_No step-level error on record._ Common causes: **LLM init** (check `config/archon.yaml` and env), **git isolation** (uncommitted changes on the server’s repo copy), or **branch creation** failed. *Log tail* or the Zeverse run view has the line that explains it."
     );
   }
 
   let tail = "";
   try {
     const res = await fetch(
-      `${archonBaseUrl()}/api/logs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}&offset=0`
+      `${zeverseBaseUrl()}/api/logs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}&offset=0`
     );
     if (res.ok) {
-      const data = await archonResponseJson<{ content?: string }>(res, "GET /api/logs");
+      const data = await zeverseResponseJson<{ content?: string }>(res, "GET /api/logs");
       const t = (data.content ?? "").trim();
       if (t.length > 0) {
         const slice = t.length > 1800 ? t.slice(-1800) : t;
@@ -783,7 +783,7 @@ const SLACK_MAX_TEXT = 3900;
 
 function trimOutput(text: string): string {
   if (text.length <= SLACK_MAX_TEXT) return text;
-  return text.slice(0, SLACK_MAX_TEXT) + "\n…_(truncated — see full output in Archon Hub)_";
+  return text.slice(0, SLACK_MAX_TEXT) + "\n…_(truncated — see full output in Zeverse)_";
 }
 
 async function pollRunAndPostResult(
@@ -805,7 +805,7 @@ async function pollRunAndPostResult(
       const res = await fetch(
         `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
       );
-      state = await archonResponseJson<RunState>(res, "GET /api/runs/:id");
+      state = await zeverseResponseJson<RunState>(res, "GET /api/runs/:id");
     } catch {
       continue;
     }
@@ -858,7 +858,7 @@ async function pollRunAndPostResult(
     }
 
     parts.push("");
-    parts.push(`<${ARCHON_UI_URL}/?run=${runId}|View full output in Archon Hub>`);
+    parts.push(`<${ARCHON_UI_URL}/?run=${runId}|View full output in Zeverse>`);
 
     await client.chat.postMessage({
       channel,
@@ -873,7 +873,7 @@ async function pollRunAndPostResult(
     thread_ts,
     text:
       `*Workflow timed out* — the run is still going.\n` +
-      `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
+      `<${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>`,
   });
 }
 
@@ -884,12 +884,12 @@ function successBlocks(inv: Invocation & { runId: string }) {
       text: {
         type: "mrkdwn",
         text: [
-          `*Archon workflow started*`,
+          `*Zeverse workflow started*`,
           `Repo: \`${inv.repoId}\``,
           `Workflow: \`${inv.workflow}\``,
           `Prompt: ${inv.prompt}`,
           `Run ID: \`${inv.runId}\``,
-          `<${ARCHON_UI_URL}/?run=${inv.runId}|View in Archon Hub>`,
+          `<${ARCHON_UI_URL}/?run=${inv.runId}|View in Zeverse>`,
         ].join("\n"),
       },
     },
@@ -928,12 +928,12 @@ function registerCommand(commandName: string, workflowName: string) {
         client,
         command.channel_id,
         [
-          `*Archon workflow started*`,
+          `*Zeverse workflow started*`,
           `Repo: \`${inv.repoId}\``,
           `Workflow: \`${inv.workflow}\``,
           `Prompt: ${inv.prompt}`,
           `Run ID: \`${runId}\``,
-          `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
+          `<${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>`,
         ].join("\n")
       );
 
@@ -943,7 +943,7 @@ function registerCommand(commandName: string, workflowName: string) {
     } catch (err: any) {
       await respond({
         response_type: "ephemeral",
-        text: `Error connecting to Archon server: ${err.message}`,
+        text: `Error connecting to Zeverse server: ${err.message}`,
       });
     }
   });
@@ -1090,7 +1090,7 @@ function extractDocId(urlOrId: string): string {
 // ─── PRD context discovery ──────────────────────────────────────────────────
 // When no saved PRD thread context exists (e.g. because the slash command
 // didn't save one properly), discover it by scanning the thread for an
-// Archon Hub run URL and reconstructing the context from the run state.
+// Zeverse run URL and reconstructing the context from the run state.
 
 /**
  * Scans local run state files to find the most recent successful prd-analysis
@@ -1244,7 +1244,7 @@ async function pollRunAndReply(
       const res = await fetch(
         `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
       );
-      state = await archonResponseJson<RunState>(res, "GET /api/runs/:id");
+      state = await zeverseResponseJson<RunState>(res, "GET /api/runs/:id");
     } catch {
       continue;
     }
@@ -1297,7 +1297,7 @@ async function pollRunAndReply(
       "",
       commentLine,
       questionCountLine,
-      `<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View full analysis in Archon Hub>`,
+      `<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View full analysis in Zeverse>`,
       "",
       epicBreakdown ? `*Epic & Tasks*\n${epicBreakdown}` : "",
     ]
@@ -1418,7 +1418,7 @@ async function pollRunAndReply(
     thread_ts,
     text:
       `*PRD analysis timed out* — the run is still going.\n` +
-      `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
+      `<${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>`,
   });
 }
 
@@ -1507,7 +1507,7 @@ app.command("/archon-prd", async ({ command, ack, respond, client, logger }) => 
       client,
       command.channel_id,
       `*PRD analysis started* on \`${inv.repoId}\` for <${docUrl}|Open PRD>\n` +
-        `Run: \`${runId}\` | <${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>\n` +
+        `Run: \`${runId}\` | <${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>\n` +
         `_I'll reply in this thread when the analysis is done._` +
         rerunNote
     );
@@ -1524,7 +1524,7 @@ app.command("/archon-prd", async ({ command, ack, respond, client, logger }) => 
   } catch (err: any) {
     await respond({
       response_type: "ephemeral",
-      text: `Error connecting to Archon server: ${err.message}`,
+      text: `Error connecting to Zeverse server: ${err.message}`,
     });
   }
 });
@@ -1583,7 +1583,7 @@ async function postGDocComment(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ docId, body }),
     });
-    return await archonResponseJson<{ commentId?: string; error?: string }>(
+    return await zeverseResponseJson<{ commentId?: string; error?: string }>(
       res,
       "POST /api/gdoc-comment"
     );
@@ -1602,7 +1602,7 @@ async function postGDocSuggestEdits(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ docId, edits }),
     });
-    return await archonResponseJson<any>(res, "POST /api/gdoc-suggest");
+    return await zeverseResponseJson<any>(res, "POST /api/gdoc-suggest");
   } catch (err: any) {
     return { error: err.message };
   }
@@ -1669,7 +1669,7 @@ async function handlePrdThreadMention(
     await client.chat.postMessage({
       channel,
       thread_ts,
-      text: `Error connecting to Archon server: ${err.message}`,
+      text: `Error connecting to Zeverse server: ${err.message}`,
     });
     return;
   }
@@ -1710,7 +1710,7 @@ async function pollThreadSync(
       const res = await fetch(
         `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(ctx.repoId)}`
       );
-      state = await archonResponseJson<RunState>(res, "GET /api/runs/:id");
+      state = await zeverseResponseJson<RunState>(res, "GET /api/runs/:id");
     } catch {
       continue;
     }
@@ -1763,7 +1763,7 @@ async function pollThreadSync(
     }
     parts.push("");
     parts.push(`<${ctx.docUrl}|Open PRD in Google Docs>`);
-    parts.push(`<${ARCHON_UI_URL}/?run=${runId}|View full run in Archon Hub>`);
+    parts.push(`<${ARCHON_UI_URL}/?run=${runId}|View full run in Zeverse>`);
 
     await client.chat.postMessage({ channel, thread_ts, text: parts.join("\n") });
     return;
@@ -1774,7 +1774,7 @@ async function pollThreadSync(
     thread_ts,
     text:
       `*PRD thread sync timed out* — the run is still going.\n` +
-      `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
+      `<${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>`,
   });
 }
 
@@ -1838,7 +1838,7 @@ async function callHarnessRoute(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return archonResponseJson<HarnessRouteResult>(res, "POST /api/harness/route");
+  return zeverseResponseJson<HarnessRouteResult>(res, "POST /api/harness/route");
 }
 
 interface ExecuteOptions {
@@ -1868,7 +1868,7 @@ async function callHarnessExecute(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return archonResponseJson<RunResponse & { missing?: string[] }>(res, "POST /api/harness/execute");
+  return zeverseResponseJson<RunResponse & { missing?: string[] }>(res, "POST /api/harness/execute");
 }
 
 /**
@@ -2136,7 +2136,7 @@ async function downloadAndForwardThreadReply(
         }),
       }
     );
-    const data = await archonResponseJson<{ resumed?: boolean; error?: string }>(
+    const data = await zeverseResponseJson<{ resumed?: boolean; error?: string }>(
       res, "POST /api/runs/:id/thread-reply"
     );
 
@@ -2158,11 +2158,11 @@ async function downloadAndForwardThreadReply(
       text: `_Got it${filesSummary} — resuming the debug run..._`,
     });
   } catch (err: any) {
-    logger.error(`Failed to forward thread reply to Archon: ${err.message}`);
+    logger.error(`Failed to forward thread reply to Zeverse: ${err.message}`);
     await client.chat.postMessage({
       channel: ask.channel,
       thread_ts: ask.threadTs,
-      text: `Error forwarding your reply to Archon: ${err.message}`,
+      text: `Error forwarding your reply to Zeverse: ${err.message}`,
     });
   }
 }
@@ -2210,7 +2210,7 @@ async function pollRunEvents(
       const res = await fetch(
         `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}/events?repoId=${encodeURIComponent(repoId)}&offset=${offset}`
       );
-      const data = await archonResponseJson<{ content: string; nextOffset: number }>(
+      const data = await zeverseResponseJson<{ content: string; nextOffset: number }>(
         res, "GET /api/runs/:id/events"
       );
       content = data.content;
@@ -2303,7 +2303,7 @@ async function pollRunEvents(
       const runRes = await fetch(
         `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
       );
-      const runState = await archonResponseJson<RunState>(runRes, "GET /api/runs/:id");
+      const runState = await zeverseResponseJson<RunState>(runRes, "GET /api/runs/:id");
       if (runState.status === "success" || runState.status === "failed") return;
     } catch { /* continue */ }
   }
@@ -2332,7 +2332,7 @@ async function handleHarnessMessage(
     await client.chat.postMessage({
       channel,
       thread_ts,
-      text: `Error connecting to Archon server: ${err.message}`,
+      text: `Error connecting to Zeverse server: ${err.message}`,
     });
     return;
   }
@@ -2364,7 +2364,7 @@ async function handleHarnessMessage(
     await client.chat.postMessage({
       channel,
       thread_ts,
-      text: route.question ?? "Which repository should I work with? " + (await noRepoErrorText("@ArchonBot")),
+      text: route.question ?? "Which repository should I work with? " + (await noRepoErrorText("@ZeverseBot")),
     });
     return;
   }
@@ -2449,7 +2449,7 @@ app.action("harness_run", async ({ action, ack, body, client, logger }) => {
         thread_ts,
         text:
           `*PRD analysis started* on \`${p.repoId}\` for <${docUrl}|Open PRD>\n` +
-          `Run: \`${runId}\` | <${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>\n` +
+          `Run: \`${runId}\` | <${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>\n` +
           `_I'll reply in this thread when the analysis is done._`,
       });
       pollRunAndReply(runId, p.repoId, channel, thread_ts, docUrl, client, logger).catch(
@@ -2460,7 +2460,7 @@ app.action("harness_run", async ({ action, ack, body, client, logger }) => {
         channel,
         thread_ts,
         blocks: successBlocks({ repoId: p.repoId, workflow: p.workflow, prompt: p.prompt, runId }),
-        text: `Archon run ${runId} started for ${p.repoId}/${p.workflow}`,
+        text: `Zeverse run ${runId} started for ${p.repoId}/${p.workflow}`,
       });
       pollRunAndPostResult(runId, p.repoId, channel, thread_ts, client, logger).catch(
         (err) => logger.error("pollRunAndPostResult (harness_run) error:", err)
@@ -2482,7 +2482,7 @@ app.action("harness_run", async ({ action, ack, body, client, logger }) => {
     await client.chat.postMessage({
       channel,
       thread_ts,
-      text: `Error connecting to Archon server: ${err.message}`,
+      text: `Error connecting to Zeverse server: ${err.message}`,
     });
   }
   proposalStore.delete(proposalId);
@@ -2553,7 +2553,7 @@ app.action("harness_pick", async ({ action, ack, body, client, logger }) => {
         thread_ts: p.threadTs,
         text:
           `*PRD analysis started* on \`${p.repoId}\` for <${docUrl}|Open PRD>\n` +
-          `Run: \`${runId}\` | <${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>\n` +
+          `Run: \`${runId}\` | <${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>\n` +
           `_I'll reply in this thread when the analysis is done._`,
       });
       pollRunAndReply(runId, p.repoId, channel, p.threadTs, docUrl, client, logger).catch(
@@ -2564,7 +2564,7 @@ app.action("harness_pick", async ({ action, ack, body, client, logger }) => {
         channel,
         thread_ts: p.threadTs,
         blocks: successBlocks({ repoId: p.repoId, workflow: newWorkflow, prompt: p.prompt, runId }),
-        text: `Archon run ${runId} started for ${p.repoId}/${newWorkflow}`,
+        text: `Zeverse run ${runId} started for ${p.repoId}/${newWorkflow}`,
       });
       pollRunAndPostResult(runId, p.repoId, channel, p.threadTs, client, logger).catch(
         (err) => logger.error("pollRunAndPostResult (harness_pick) error:", err)
@@ -2586,7 +2586,7 @@ app.action("harness_pick", async ({ action, ack, body, client, logger }) => {
     await client.chat.postMessage({
       channel,
       thread_ts: p.threadTs,
-      text: `Error connecting to Archon server: ${err.message}`,
+      text: `Error connecting to Zeverse server: ${err.message}`,
     });
   }
   proposalStore.delete(proposalId);
@@ -2661,7 +2661,7 @@ app.action("prd_confirm_pr", async ({ action, ack, body, client, logger }) => {
     const runRes = await fetch(
       `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(analysisRunId)}?repoId=${encodeURIComponent(repoId)}`
     );
-    const state = await archonResponseJson<RunState>(runRes, "GET /api/runs/:id");
+    const state = await zeverseResponseJson<RunState>(runRes, "GET /api/runs/:id");
     const deliverableStep = state.steps.find((s) => s.id === "deliverable");
     if (!deliverableStep?.output) {
       if (messageTs && channel) {
@@ -2709,7 +2709,7 @@ app.action("prd_confirm_pr", async ({ action, ack, body, client, logger }) => {
     await client.chat.postMessage({
       channel,
       thread_ts: threadTs,
-      text: `Error connecting to Archon server: ${err.message}`,
+      text: `Error connecting to Zeverse server: ${err.message}`,
     });
     return;
   }
@@ -2750,7 +2750,7 @@ async function pollPrdRaiseAndReply(
       const res = await fetch(
         `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
       );
-      state = await archonResponseJson<RunState>(res, "GET /api/runs/:id");
+      state = await zeverseResponseJson<RunState>(res, "GET /api/runs/:id");
     } catch {
       continue;
     }
@@ -2772,7 +2772,7 @@ async function pollPrdRaiseAndReply(
     if (branchMatch) parts.push(`Branch: \`${branchMatch[1]}\``);
     if (prUrlMatch) parts.push(`PR: <${prUrlMatch[1]}|View PR on GitHub>`);
     parts.push(
-      `<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View raise-PR run in Archon Hub>`
+      `<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View raise-PR run in Zeverse>`
     );
 
     await client.chat.postMessage({ channel, thread_ts, text: parts.join("\n") });
@@ -2784,7 +2784,7 @@ async function pollPrdRaiseAndReply(
     thread_ts,
     text:
       `*PRD raise-PR timed out* — the run is still going.\n` +
-      `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
+      `<${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>`,
   });
 }
 
@@ -2872,7 +2872,7 @@ app.action("prd_create_fr_card", async ({ action, ack, body, client, logger }) =
     const runRes = await fetch(
       `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(analysisRunId)}?repoId=${encodeURIComponent(repoId)}`
     );
-    const state = await archonResponseJson<RunState>(runRes, "GET /api/runs/:id");
+    const state = await zeverseResponseJson<RunState>(runRes, "GET /api/runs/:id");
     const deliverableStep = state.steps.find((s) => s.id === "deliverable");
     if (!deliverableStep?.output) {
       if (channel) {
@@ -2984,7 +2984,7 @@ app.view("prd_create_fr_card_submit", async ({ ack, view, client, logger }) => {
     const runRes = await fetch(
       `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(analysisRunId)}?repoId=${encodeURIComponent(repoId)}`
     );
-    const state = await archonResponseJson<RunState>(runRes, "GET /api/runs/:id");
+    const state = await zeverseResponseJson<RunState>(runRes, "GET /api/runs/:id");
     const deliverableStep = state.steps.find((s) => s.id === "deliverable");
     deliverableContent = deliverableStep?.output ?? "";
   } catch (err: any) {
@@ -3017,7 +3017,7 @@ app.view("prd_create_fr_card_submit", async ({ ack, view, client, logger }) => {
     await client.chat.postMessage({
       channel,
       thread_ts: threadTs,
-      text: `Error connecting to Archon server: ${err.message}`,
+      text: `Error connecting to Zeverse server: ${err.message}`,
     });
     return;
   }
@@ -3037,7 +3037,7 @@ app.view("prd_create_fr_card_submit", async ({ ack, view, client, logger }) => {
     thread_ts: threadTs,
     text:
       `_Creating FR cards in \`${workspace}\`..._\n` +
-      `Run: \`${frRunId}\` | <${ARCHON_UI_URL}/?run=${frRunId}|View in Archon Hub>`,
+      `Run: \`${frRunId}\` | <${ARCHON_UI_URL}/?run=${frRunId}|View in Zeverse>`,
   });
 
   pollFrCardAndReply(frRunId, repoId, channel, threadTs, docUrl, workspace, client, logger).catch(
@@ -3099,7 +3099,7 @@ async function pollFrCardAndReply(
       const res = await fetch(
         `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
       );
-      state = await archonResponseJson<RunState>(res, "GET /api/runs/:id");
+      state = await zeverseResponseJson<RunState>(res, "GET /api/runs/:id");
     } catch {
       continue;
     }
@@ -3140,7 +3140,7 @@ async function pollFrCardAndReply(
     }
 
     parts.push("");
-    parts.push(`<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View run in Archon Hub>`);
+    parts.push(`<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View run in Zeverse>`);
 
     await client.chat.postMessage({ channel, thread_ts, text: parts.join("\n") });
     return;
@@ -3151,7 +3151,7 @@ async function pollFrCardAndReply(
     thread_ts,
     text:
       `*FR card creation timed out* — the run is still going.\n` +
-      `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
+      `<${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>`,
   });
 }
 
@@ -3250,7 +3250,7 @@ app.action("approval_approve", async ({ action, ack, body, client, logger }) => 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ by: slackUser }),
     });
-    const data = await archonResponseJson<{ approved?: boolean; error?: string }>(res, "POST /api/runs/:id/approve");
+    const data = await zeverseResponseJson<{ approved?: boolean; error?: string }>(res, "POST /api/runs/:id/approve");
     if (data.error) {
       await client.chat.postMessage({ channel, text: `Approve failed: ${data.error}` });
       return;
@@ -3286,7 +3286,7 @@ app.action("approval_reject", async ({ action, ack, body, client, logger }) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ by: slackUser }),
     });
-    const data = await archonResponseJson<{ rejected?: boolean; error?: string }>(res, "POST /api/runs/:id/reject");
+    const data = await zeverseResponseJson<{ rejected?: boolean; error?: string }>(res, "POST /api/runs/:id/reject");
     if (data.error) {
       await client.chat.postMessage({ channel, text: `Reject failed: ${data.error}` });
       return;
@@ -3326,7 +3326,7 @@ async function pollBootstrapRun(
       const res = await fetch(
         `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
       );
-      state = await archonResponseJson<any>(res, "GET /api/runs/:id");
+      state = await zeverseResponseJson<any>(res, "GET /api/runs/:id");
     } catch {
       continue;
     }
@@ -3362,7 +3362,7 @@ async function pollBootstrapRun(
   await client.chat.postMessage({
     channel,
     thread_ts,
-    text: `Rules bootstrap is still running after ${(maxAttempts * intervalMs) / 1000}s. Check <${ARCHON_UI_URL}|Archon Hub> for status.`,
+    text: `Rules bootstrap is still running after ${(maxAttempts * intervalMs) / 1000}s. Check <${ARCHON_UI_URL}|Zeverse> for status.`,
   });
 }
 
@@ -3396,10 +3396,10 @@ app.action("bootstrap_rules", async ({ action, ack, body, client, logger }) => {
 
   try {
     const res = await fetch(
-      `${archonBaseUrl()}/api/repos/${encodeURIComponent(repoId)}/bootstrap-rules`,
+      `${zeverseBaseUrl()}/api/repos/${encodeURIComponent(repoId)}/bootstrap-rules`,
       { method: "POST" }
     );
-    const data = await archonResponseJson<{ runId?: string; error?: string }>(
+    const data = await zeverseResponseJson<{ runId?: string; error?: string }>(
       res, "POST /api/repos/:id/bootstrap-rules"
     );
     if (data.error) {
@@ -3413,7 +3413,7 @@ app.action("bootstrap_rules", async ({ action, ack, body, client, logger }) => {
     await client.chat.postMessage({
       channel,
       thread_ts,
-      text: `Rules bootstrap started (run \`${data.runId}\`). Follow progress in <${ARCHON_UI_URL}|Archon Hub>.`,
+      text: `Rules bootstrap started (run \`${data.runId}\`). Follow progress in <${ARCHON_UI_URL}|Zeverse>.`,
     });
 
     pollBootstrapRun(data.runId!, repoId, channel, thread_ts, client, logger).catch(
@@ -3608,7 +3608,7 @@ async function postGDocReply(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ docId, commentId, body }),
     });
-    return await archonResponseJson<{ replyId?: string; error?: string }>(
+    return await zeverseResponseJson<{ replyId?: string; error?: string }>(
       res,
       "POST /api/gdoc-reply"
     );
@@ -3733,8 +3733,8 @@ app.message(async ({ message, client, logger }) => {
 });
 
 (async () => {
-  await probeArchonOnStartup();
+  await probeZeverseOnStartup();
   const port = parseInt(process.env.SLACK_BOT_PORT ?? "3200", 10);
   await app.start(port);
-  console.log(`Archon Hub Slack bot listening on port ${port}`);
+  console.log(`Zeverse Slack bot listening on port ${port}`);
 })();

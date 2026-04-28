@@ -34,7 +34,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Archon Hub server listening on http://localhost:${PORT}`);
+  console.log(`Zeverse server listening on http://localhost:${PORT}`);
 });
 
 export default app;
