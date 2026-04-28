@@ -1,6 +1,9 @@
 import { Router, Request, Response } from "express";
 import { addGitRepo, listRepos, removeRepo, requireRepo } from "../repos";
 import { refreshWorkflowsCache } from "../workflows";
+import { loadConfig } from "../config";
+import { buildBootstrapRulesWorkflow } from "../runner/bootstrap-rules-workflow";
+import { startRun } from "../runner";
 
 export const repoRoutes = Router();
 
@@ -38,6 +41,20 @@ repoRoutes.post("/repos/:id/refresh-workflows", (req: Request<{ id: string }>, r
     const repo = requireRepo(req.params.id);
     refreshWorkflowsCache(repo);
     res.json({ ok: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+repoRoutes.post("/repos/:id/bootstrap-rules", async (req: Request<{ id: string }>, res: Response) => {
+  try {
+    const repo = requireRepo(req.params.id);
+    const config = loadConfig();
+    const workflow = buildBootstrapRulesWorkflow(repo);
+    const runId = await startRun(
+      repo, workflow, "Bootstrap AI rules & skills", {}, config
+    );
+    res.json({ runId });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }

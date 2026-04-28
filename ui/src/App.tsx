@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  bootstrapRules,
   fetchInferWorkflow,
   fetchLogs,
   fetchRepos,
@@ -298,6 +299,23 @@ export default function App() {
     [refreshRepos]
   );
 
+  const handleBootstrapRules = useCallback(
+    async (id: string) => {
+      setError(null);
+      setSelectedRepoId(id);
+      try {
+        const newRunId = await bootstrapRules(id);
+        setRunId(newRunId);
+        setRun(null);
+        setLogs("");
+        logOffset.current = 0;
+      } catch (err: any) {
+        setError(`Failed to start rules bootstrap: ${err.message ?? "unknown error"}`);
+      }
+    },
+    []
+  );
+
   const selectedRepo = repos.find((r) => r.id === selectedRepoId) ?? null;
 
   return (
@@ -410,6 +428,23 @@ export default function App() {
                   >
                     {repo.defaultBranch}
                   </div>
+                </button>
+                <button
+                  onClick={() => handleBootstrapRules(repo.id)}
+                  title="Generate AI rules & skills PR"
+                  style={{
+                    padding: "2px 6px",
+                    background: "transparent",
+                    color: "var(--accent)",
+                    border: "1px solid var(--accent)",
+                    borderRadius: 4,
+                    cursor: "pointer",
+                    fontSize: 10,
+                    fontWeight: 600,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  + Rules
                 </button>
                 <button
                   onClick={() => handleRemoveRepo(repo.id)}

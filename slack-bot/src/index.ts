@@ -547,6 +547,38 @@ async function handleAddRepoMessage(
       `Default branch: \`${repo.defaultBranch}\``,
       `<${ARCHON_UI_URL}|Open Archon Hub>`,
     ].join("\n"),
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: [
+            `*Repo added* :white_check_mark:`,
+            `ID: \`${repo.id}\`  |  Name: \`${repo.name}\``,
+            `Origin: ${repo.origin}`,
+            `Default branch: \`${repo.defaultBranch}\``,
+          ].join("\n"),
+        },
+      },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Add rules & skills" },
+            action_id: "bootstrap_rules",
+            value: repo.id,
+            style: "primary",
+          },
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Open Archon Hub" },
+            url: ARCHON_UI_URL,
+            action_id: "open_hub_link",
+          },
+        ],
+      },
+    ],
   });
 }
 
@@ -3271,6 +3303,135 @@ app.action("approval_reject", async ({ action, ack, body, client, logger }) => {
     logger.error("approval_reject error:", err);
     if (channel) await client.chat.postMessage({ channel, text: `Error: ${err.message}` });
   }
+});
+
+// ─── Bootstrap rules helpers ────────────────────────────────────────────────
+
+async function pollBootstrapRun(
+  runId: string,
+  repoId: string,
+  channel: string,
+  thread_ts: string,
+  client: any,
+  logger: any
+): Promise<void> {
+  const maxAttempts = 120;
+  const intervalMs = 5000;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+
+    let state: any;
+    try {
+      const res = await fetch(
+        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
+      );
+      state = await archonResponseJson<any>(res, "GET /api/runs/:id");
+    } catch {
+      continue;
+    }
+
+    if (state.status !== "success" && state.status !== "failed") continue;
+
+    if (state.status === "failed") {
+      const failedStep = state.steps?.find((s: any) => s.status === "failed");
+      const errMsg = failedStep
+        ? `Step \`${failedStep.id}\` failed: ${failedStep.error ?? "unknown"}`
+        : "Run failed (check logs for details)";
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `*Rules bootstrap failed* :x:\n${errMsg}`,
+      });
+      return;
+    }
+
+    const parts: string[] = ["*Rules & skills PR created* :white_check_mark:"];
+    if (state.prUrl) {
+      parts.push(`<${state.prUrl}|View PR on GitHub>`);
+    }
+    const summaryStep = state.steps?.find((s: any) => s.id === "summary" && s.status === "success");
+    if (summaryStep?.output) {
+      parts.push(`\n${summaryStep.output.slice(0, 500)}`);
+    }
+
+    await client.chat.postMessage({ channel, thread_ts, text: parts.join("\n") });
+    return;
+  }
+
+  await client.chat.postMessage({
+    channel,
+    thread_ts,
+    text: `Rules bootstrap is still running after ${(maxAttempts * intervalMs) / 1000}s. Check <${ARCHON_UI_URL}|Archon Hub> for status.`,
+  });
+}
+
+// ─── Bootstrap rules action ─────────────────────────────────────────────────
+
+app.action("bootstrap_rules", async ({ action, ack, body, client, logger }) => {
+  await ack();
+  const repoId = (action as any).value;
+  if (!repoId) return;
+
+  const channel = (body as any).channel?.id;
+  const messageTs = (body as any).message?.ts;
+  const thread_ts = (body as any).message?.thread_ts ?? messageTs;
+
+  if (messageTs && channel) {
+    await client.chat.update({
+      channel,
+      ts: messageTs,
+      text: `_Generating rules & skills for \`${repoId}\`..._`,
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `_Generating rules & skills for \`${repoId}\`..._`,
+          },
+        },
+      ],
+    }).catch(() => {});
+  }
+
+  try {
+    const res = await fetch(
+      `${archonBaseUrl()}/api/repos/${encodeURIComponent(repoId)}/bootstrap-rules`,
+      { method: "POST" }
+    );
+    const data = await archonResponseJson<{ runId?: string; error?: string }>(
+      res, "POST /api/repos/:id/bootstrap-rules"
+    );
+    if (data.error) {
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `Failed to start bootstrap: ${data.error}`,
+      });
+      return;
+    }
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: `Rules bootstrap started (run \`${data.runId}\`). Follow progress in <${ARCHON_UI_URL}|Archon Hub>.`,
+    });
+
+    pollBootstrapRun(data.runId!, repoId, channel, thread_ts, client, logger).catch(
+      (err: any) => logger.error("pollBootstrapRun error:", err)
+    );
+  } catch (err: any) {
+    logger.error("bootstrap_rules error:", err);
+    if (channel) {
+      await client.chat.postMessage({
+        channel, thread_ts,
+        text: `Error starting bootstrap: ${err.message}`,
+      });
+    }
+  }
+});
+
+app.action("open_hub_link", async ({ ack }) => {
+  await ack();
 });
 
 // ─── Harness thread follow-up ───────────────────────────────────────────────

@@ -589,15 +589,25 @@ async function runWorkflow(
         await session.pushRunBranch();
         appendLog(repo.id, runId, `Pushed branch ${session.runBranch} to origin`);
 
+        const summaryStep = state.steps.find((s) => s.id === "summary" && s.status === "success");
+        const prBody = summaryStep?.output
+          ? [
+              summaryStep.output,
+              "",
+              `**Run ID:** \`${runId}\``,
+              `**Base branch:** \`${session.baseBranch}\``,
+            ].join("\n")
+          : [
+              `Automated PR from Archon Hub workflow **${workflow.name}**.`,
+              "",
+              `**Run ID:** \`${runId}\``,
+              `**Base branch:** \`${session.baseBranch}\``,
+              `**Prompt:** ${state.prompt}`,
+            ].join("\n");
+
         const pr = await session.openPR({
           title: `[archon] ${workflow.name}: ${state.prompt.slice(0, 80)}`,
-          body: [
-            `Automated PR from Archon Hub workflow **${workflow.name}**.`,
-            "",
-            `**Run ID:** \`${runId}\``,
-            `**Base branch:** \`${session.baseBranch}\``,
-            `**Prompt:** ${state.prompt}`,
-          ].join("\n"),
+          body: prBody,
           baseBranch: session.baseBranch,
         });
         state.prUrl = pr.url;

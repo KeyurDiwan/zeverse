@@ -96,33 +96,47 @@ export async function executeShellStep(
   });
 }
 
+/** Normalizes LLM-ish text before scanning for path= fenced blocks. */
+export function normalizeFileBlockSource(text: string): string {
+  let s = text.replace(/\r\n?/g, "\n");
+  if (s.charCodeAt(0) === 0xfeff) s = s.slice(1);
+  return s;
+}
+
 /**
- * Parses fenced code blocks of the form:
- *   ```<lang?> path=<relative/path>
- *   ...file contents...
- *   ```
- * or with `file=` instead of `path=`. Returns each block found.
+ * Parses fenced code blocks whose opening line includes path= or file= (relative path).
+ * Optional language tags may appear before path=; whitespace between fence and path= is optional.
+ * Trailing commentary on the opening line (after the path token) is ignored.
  */
 export function parseFileBlocks(
   text: string
 ): { path: string; content: string }[] {
-  const lines = text.split("\n");
+  const normalized = normalizeFileBlockSource(text);
+  const lines = normalized.split("\n");
   const blocks: { path: string; content: string }[] = [];
+  // Longer aliases first so "filepath=" does not incorrectly match alias "file"
   const openRe =
-    /^\s*```(?:[a-zA-Z0-9_+.-]+)?\s+(?:path|file)\s*=\s*["']?([^\s"'`]+)["']?\s*$/;
+    /^\s*```(?:[a-zA-Z0-9_+.-]+)?\s*(?:filepath|filename|path|file)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'`]+))/i;
   const closeRe = /^\s*```\s*$/;
 
   let i = 0;
   while (i < lines.length) {
-    const m = lines[i].match(openRe);
+    const m = lines[i].replace(/\r$/, "").match(openRe);
     if (!m) {
       i++;
       continue;
     }
-    const relPath = m[1];
+    const relPath = (m[1] ?? m[2] ?? m[3] ?? "").trim();
+    if (!relPath) {
+      i++;
+      continue;
+    }
     const buf: string[] = [];
     i++;
-    while (i < lines.length && !closeRe.test(lines[i])) {
+    while (
+      i < lines.length &&
+      !closeRe.test(lines[i].replace(/\r$/, ""))
+    ) {
       buf.push(lines[i]);
       i++;
     }
@@ -188,8 +202,15 @@ export async function executeApplyStep(
   );
 
   if (blocks.length === 0) {
+    const normalizedSource = normalizeFileBlockSource(source);
+    const preview = normalizedSource.slice(0, 800);
+    appendLog(
+      repoId,
+      runId,
+      `[${step.id}] No file blocks parsed; input preview (truncated): ${preview}${normalizedSource.length > 800 ? "…" : ""}`
+    );
     const msg =
-      "No file blocks found. Expected fenced blocks like ```tsx path=src/foo.tsx ...```";
+      "No file blocks found. Expected fenced blocks like ```tsx path=src/foo.tsx``` or ```path=src/foo.tsx```";
     if (requireBlocks) throw new Error(msg);
     return `(${msg})\n`;
   }

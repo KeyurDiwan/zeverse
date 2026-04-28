@@ -96,6 +96,31 @@ You can target a specific branch for a run:
 
 Defaults to the repo's `defaultBranch` when omitted.
 
+### Bootstrapping rules & skills
+
+After importing a repo you can auto-generate `.archon/rules/*.md` files — these
+give the LLM context about the repo's tech stack, conventions, testing patterns,
+and domain for every future workflow run.
+
+**UI:** Click the **+ Rules** button next to any repo in the sidebar. A
+`bootstrap-rules` run starts immediately; progress streams in the log pane.
+When the run finishes it pushes a branch and opens a PR on the target repo.
+
+**Slack:** After `add-repo` succeeds the bot posts an **Add rules & skills**
+button. Click it to kick off the same run.
+
+**API:**
+
+```bash
+curl -X POST http://localhost:3100/api/repos/<repo-id>/bootstrap-rules
+# → { "runId": "..." }
+```
+
+The run clones the repo, fingerprints the codebase (directory tree, config
+files, CI setup), sends the fingerprint to the LLM, and writes one `.md` file
+per concern (e.g. `tech-stack.md`, `conventions.md`, `testing.md`). The PR
+branch is named `archon/bootstrap-rules/<runId>`.
+
 ## Adding workflows to a target repo
 
 Inside the target repo, create `.archon/workflows/<name>.yaml`:
@@ -204,6 +229,7 @@ Templating uses `{{inputs.<id>}}` and `{{steps.<id>.output}}`.
 | POST   | `/api/repos`                  | Register a repo (`{url}`, optional `{name}`) |
 | DELETE | `/api/repos/:id`              | Remove a repo from the registry         |
 | POST   | `/api/repos/:id/refresh-workflows` | Force-refresh the cached workflows for a repo |
+| POST   | `/api/repos/:id/bootstrap-rules` | Analyse codebase and open a PR with `.archon/rules/*.md` files |
 | GET    | `/api/workflows?repoId=`      | List workflows for a repo               |
 | POST   | `/api/run-workflow`           | Start a run (`{repoId, workflow, prompt, baseBranch?}`) |
 | GET    | `/api/runs/:id?repoId=`       | Get run state                           |

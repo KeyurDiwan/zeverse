@@ -63,6 +63,14 @@ export async function addGitRepo(url: string, name?: string): Promise<Repo> {
   return data.repo;
 }
 
+export async function bootstrapRules(repoId: string): Promise<string> {
+  const res = await fetch(`${BASE}/repos/${encodeURIComponent(repoId)}/bootstrap-rules`, {
+    method: "POST",
+  });
+  const data = await json<{ runId: string }>(res);
+  return data.runId;
+}
+
 export async function removeRepo(id: string): Promise<void> {
   const res = await fetch(`${BASE}/repos/${id}`, { method: "DELETE" });
   await json<{ ok: true }>(res);
