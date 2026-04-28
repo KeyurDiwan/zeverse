@@ -83,19 +83,58 @@ interface FRIssueEntry {
   epicKey?: string;
 }
 
-function parseFRIssuesJson(text: string): FRIssueEntry[] {
-  const re = /```(?:json)?\s*fr-issues?\s*\n([\s\S]*?)```/i;
-  const m = text.match(re);
+/**
+ * Extracts FR issue entries from a fenced `json fr-issues` block.
+ * Tolerates truncated LLM output: if the closing fence or array bracket
+ * is missing, recovers by finding the last complete JSON object in the
+ * partial stream and parsing the valid prefix.
+ */
+export function parseFRIssuesJson(text: string): FRIssueEntry[] {
+  const strictRe = /```(?:json)?\s*fr-issues?\s*\n([\s\S]*?)```/i;
+  const looseRe = /```(?:json)?\s*fr-issues?\s*\n([\s\S]*)/i;
+
+  const m = strictRe.exec(text) ?? looseRe.exec(text);
   if (!m) return [];
-  try {
-    const parsed = JSON.parse(m[1]);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (e: any) => typeof e === "object" && typeof e.title === "string"
-    );
-  } catch {
-    return [];
+
+  const raw = m[1].trim();
+  if (!raw) return [];
+
+  const tryParse = (s: string): FRIssueEntry[] => {
+    try {
+      const parsed = JSON.parse(s);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(
+        (e: any) => typeof e === "object" && typeof e.title === "string"
+      );
+    } catch {
+      return [];
+    }
+  };
+
+  const strict = tryParse(raw);
+  if (strict.length > 0) return strict;
+
+  // Recovery: find the last complete JSON object `}` respecting string quoting,
+  // then wrap as a valid array and re-parse.
+  let lastCompleteObj = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === "\\") { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{") depth++;
+    if (ch === "}") { depth--; if (depth === 0) lastCompleteObj = i; }
   }
+
+  if (lastCompleteObj <= 0) return [];
+
+  const prefix = raw.slice(0, lastCompleteObj + 1).trimEnd();
+  const candidate = prefix.endsWith("]") ? prefix : prefix + "]";
+  return tryParse(candidate);
 }
 
 export async function executeFRCreateStep(

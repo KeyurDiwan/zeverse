@@ -7,23 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import { extractFrAnalysisSummarySection } from "../executors-fr";
-
-// Re-implement parseFRIssuesJson locally since it's not exported
-function parseFRIssuesJson(text: string): { title: string; description?: string; issueType?: string; priority?: string; epicKey?: string }[] {
-  const re = /```(?:json)?\s*fr-issues?\s*\n([\s\S]*?)```/i;
-  const m = text.match(re);
-  if (!m) return [];
-  try {
-    const parsed = JSON.parse(m[1]);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (e: any) => typeof e === "object" && typeof e.title === "string"
-    );
-  } catch {
-    return [];
-  }
-}
+import { extractFrAnalysisSummarySection, parseFRIssuesJson } from "../executors-fr";
 
 function run(test: string, fn: () => void) {
   try {
@@ -86,6 +70,64 @@ run("handles fr-issue (singular) tag", () => {
   const text = '```json fr-issue\n[{"title": "Single"}]\n```';
   const result = parseFRIssuesJson(text);
   assert.equal(result.length, 1);
+});
+
+// ─── Truncation recovery tests ─────────────────────────────────────────────
+
+console.log("\nexecutors-fr: parseFRIssuesJson truncation recovery\n");
+
+run("recovers when closing fence is missing (truncated mid-array)", () => {
+  const text = `\`\`\`json fr-issues
+[
+  {"title": "Epic A", "issueType": "Epic", "priority": "High"},
+  {"title": "Task 1", "issueType": "Task", "epicKey": "Epic A"}
+`;
+  const result = parseFRIssuesJson(text);
+  assert.equal(result.length, 2);
+  assert.equal(result[0].title, "Epic A");
+  assert.equal(result[1].title, "Task 1");
+});
+
+run("recovers when last object is truncated mid-field", () => {
+  const text = `\`\`\`json fr-issues
+[
+  {"title": "Epic B", "issueType": "Epic"},
+  {"title": "Task 2", "issueType": "Task"},
+  {"title": "Task 3", "description": "## Objective\\nSome long text that gets cut o`;
+  const result = parseFRIssuesJson(text);
+  assert.equal(result.length, 2);
+  assert.equal(result[0].title, "Epic B");
+  assert.equal(result[1].title, "Task 2");
+});
+
+run("recovers when closing ] and fence are both missing", () => {
+  const text = `Some preamble.
+
+\`\`\`json fr-issues
+[
+  {"title": "Only One", "issueType": "Task"}
+`;
+  const result = parseFRIssuesJson(text);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].title, "Only One");
+});
+
+run("returns empty when truncation leaves no complete objects", () => {
+  const text = `\`\`\`json fr-issues
+[
+  {"title": "Incom`;
+  const result = parseFRIssuesJson(text);
+  assert.equal(result.length, 0);
+});
+
+run("handles description with nested braces inside strings", () => {
+  const text = `\`\`\`json fr-issues
+[
+  {"title": "With braces", "description": "Use \\"{key}\\": value pattern"},
+  {"title": "Truncated", "description": "cut off he`;
+  const result = parseFRIssuesJson(text);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].title, "With braces");
 });
 
 // ─── FR URL/key parsing tests ──────────────────────────────────────────────

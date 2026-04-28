@@ -23,6 +23,7 @@ import {
   executeFRCreateStep,
   executeFRCommentStep,
 } from "./executors-fr";
+import { executeHarAnalyzeStep } from "./executors-har";
 import { appendLog, appendEvent, RunState, saveState } from "./state";
 import type { TemplateContext } from "./template";
 import { renderTemplate } from "./template";
@@ -56,6 +57,37 @@ export function rejectApproval(runId: string, by: string, reason?: string): bool
   if (!p) return false;
   p.reject(new Error(`Rejected by ${by}${reason ? `: ${reason}` : ""}`));
   pendingApprovals.delete(runId);
+  return true;
+}
+
+// ── Thread-reply gate bookkeeping ───────────────────────────────────────────
+
+export interface ThreadReplyFile {
+  kind: "har" | "screenshot" | "attachment";
+  path: string;
+}
+
+interface ThreadReplyPayload {
+  by: string;
+  text: string;
+  files: ThreadReplyFile[];
+}
+
+interface PendingThreadReply {
+  resolve: (result: ThreadReplyPayload) => void;
+  reject: (err: Error) => void;
+}
+
+const pendingThreadReplies = new Map<string, PendingThreadReply>();
+
+export function resolveThreadReply(
+  runId: string,
+  payload: ThreadReplyPayload
+): boolean {
+  const p = pendingThreadReplies.get(runId);
+  if (!p) return false;
+  p.resolve(payload);
+  pendingThreadReplies.delete(runId);
   return true;
 }
 
@@ -149,6 +181,10 @@ async function executeStep(
       );
     case "approval":
       return executeApprovalStep(step, ctx, repo.id, runId, state);
+    case "wait-thread-reply":
+      return executeWaitThreadReplyStep(step, ctx, repo.id, runId, state);
+    case "har-analyze":
+      return executeHarAnalyzeStep(step, ctx, repo.id, runId);
     default:
       throw new Error(
         `Unknown step kind: ${step.kind}. If you pulled a newer Archon Hub, run "npm run build" in server/ (or use "npm run dev") and restart.`
@@ -201,6 +237,66 @@ async function executeApprovalStep(
   appendLog(repoId, runId, `[${step.id}] Approved by ${result.by}${result.comment ? ` — ${result.comment}` : ""}`);
 
   return `Approved by ${result.by}${result.comment ? `\nComment: ${result.comment}` : ""}`;
+}
+
+// ── Wait-thread-reply step executor ─────────────────────────────────────────
+
+async function executeWaitThreadReplyStep(
+  step: WorkflowStep,
+  ctx: TemplateContext,
+  repoId: string,
+  runId: string,
+  state: RunState
+): Promise<string> {
+  const prompt = step.prompt
+    ? renderTemplate(step.prompt, ctx)
+    : "Please reply in this thread with the requested information.";
+  const timeoutMs = step.threadReplyTimeoutMs ?? 0;
+  const expectFiles = step.expectFiles ?? [];
+
+  appendLog(repoId, runId, `[${step.id}] Awaiting thread reply: ${prompt}`);
+  state.status = "awaiting_thread_reply";
+  saveState(state);
+  appendEvent(repoId, runId, {
+    type: "awaiting_thread_reply",
+    stepId: step.id,
+    prompt,
+    expectFiles,
+  });
+
+  const result = await new Promise<ThreadReplyPayload>((resolve, reject) => {
+    pendingThreadReplies.set(runId, { resolve, reject });
+    if (timeoutMs > 0) {
+      setTimeout(() => {
+        if (pendingThreadReplies.has(runId)) {
+          pendingThreadReplies.delete(runId);
+          reject(new Error(`Thread reply timed out after ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
+    }
+  });
+
+  state.status = "running";
+  saveState(state);
+  appendEvent(repoId, runId, {
+    type: "thread_reply_received",
+    stepId: step.id,
+    by: result.by,
+    fileCount: result.files.length,
+  });
+  appendLog(
+    repoId,
+    runId,
+    `[${step.id}] Thread reply from ${result.by} (${result.files.length} file(s))`
+  );
+
+  const lines: string[] = ["USER REPLY:", result.text, "", "FILES:"];
+  for (const f of result.files) {
+    lines.push(`- ${f.kind}: ${f.path}`);
+  }
+  if (result.files.length === 0) lines.push("(none)");
+
+  return lines.join("\n");
 }
 
 // ── Retry + loop wrapper ────────────────────────────────────────────────────

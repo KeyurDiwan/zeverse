@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { loadConfig, resolveHubPath } from "../config";
 
-export type RunStatus = "queued" | "running" | "success" | "failed" | "awaiting_approval";
+export type RunStatus = "queued" | "running" | "success" | "failed" | "awaiting_approval" | "awaiting_thread_reply";
 
 export interface StepResult {
   id: string;

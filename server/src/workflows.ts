@@ -29,7 +29,9 @@ export interface WorkflowStep {
     | "fr-create"
     | "fr-comment"
     | "workflow"
-    | "approval";
+    | "approval"
+    | "wait-thread-reply"
+    | "har-analyze";
   prompt?: string;
   command?: string;
   cwd?: string;
@@ -60,6 +62,12 @@ export interface WorkflowStep {
   maxIterations?: number;
   surface?: "slack" | "ui" | "both";
   approvalTimeoutMs?: number;
+  expectFiles?: string[];
+  threadReplyTimeoutMs?: number;
+  harPathFrom?: string;
+  harPath?: string;
+  pageUrlFrom?: string;
+  apiPrefix?: string;
 }
 
 export interface Workflow {

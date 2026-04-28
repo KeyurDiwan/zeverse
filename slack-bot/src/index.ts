@@ -108,11 +108,15 @@ async function probeArchonOnStartup(): Promise<void> {
 }
 
 // ─── PRD thread tracking ───────────────────────────────────────────────────
+type QuerySeverity = "critical" | "nice-to-have";
+
 interface PrdQueryInfo {
   index: number;
   body: string;
   anchor: string;
   commentId: string;
+  severity?: QuerySeverity;
+  assignedUserId?: string;
 }
 
 interface PrdThreadContext {
@@ -659,6 +663,15 @@ async function noRepoErrorText(prefix: string): Promise<string> {
   );
 }
 
+async function postSlashAnchor(
+  client: any,
+  channelId: string,
+  text: string
+): Promise<string> {
+  const res = await client.chat.postMessage({ channel: channelId, text });
+  return (res as any).ts ?? "";
+}
+
 interface RunState {
   runId: string;
   repoId: string;
@@ -879,13 +892,20 @@ function registerCommand(commandName: string, workflowName: string) {
         return;
       }
       const runId = result.runId ?? "";
-      await respond({
-        response_type: "in_channel",
-        blocks: successBlocks({ ...inv, runId }),
-      });
+      const rootTs = await postSlashAnchor(
+        client,
+        command.channel_id,
+        [
+          `*Archon workflow started*`,
+          `Repo: \`${inv.repoId}\``,
+          `Workflow: \`${inv.workflow}\``,
+          `Prompt: ${inv.prompt}`,
+          `Run ID: \`${runId}\``,
+          `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
+        ].join("\n")
+      );
 
-      const thread_ts = command.ts ?? "";
-      pollRunAndPostResult(runId, inv.repoId, command.channel_id, thread_ts, client, logger).catch(
+      pollRunAndPostResult(runId, inv.repoId, command.channel_id, rootTs, client, logger).catch(
         (err) => logger.error("pollRunAndPostResult error:", err)
       );
     } catch (err: any) {
@@ -922,13 +942,13 @@ app.command("/archon-harness", async ({ command, ack, respond, client, logger })
 
   const repoId = parsed.repoId || DEFAULT_REPO_ID || null;
 
-  await respond({
-    response_type: "ephemeral",
-    text: `_Thinking... routing your request to the best workflow._`,
-  });
+  const rootTs = await postSlashAnchor(
+    client,
+    command.channel_id,
+    `_Thinking... routing your request to the best workflow._`
+  );
 
-  const thread_ts = command.ts ?? "";
-  handleHarnessMessage(prompt, command.channel_id, thread_ts, client, logger, "slash", repoId).catch(
+  handleHarnessMessage(prompt, command.channel_id, rootTs, client, logger, "slash", repoId).catch(
     (err) => logger.error("handleHarnessMessage (slash) error:", err)
   );
 });
@@ -950,12 +970,16 @@ app.command("/archon-add-repo", async ({ command, ack, respond, client, logger }
     return;
   }
 
-  const thread_ts = command.ts ?? "";
+  const rootTs = await postSlashAnchor(
+    client,
+    command.channel_id,
+    `_Registering repo..._`
+  );
   await handleAddRepoMessage(
     `add-repo ${rawText}`,
     command.channel_id,
     command.user_id,
-    thread_ts,
+    rootTs,
     false,
     client,
     logger
@@ -969,6 +993,17 @@ function isGoogleDocUrl(text: string): boolean {
     /drive\.google\.com\/.*\/d\//.test(text);
 }
 
+const CONFLUENCE_URL_RE =
+  /(?:atlassian\.net\/wiki\/|confluence\.|\/display\/|\/spaces\/[^/]+\/pages\/|\/pages\/viewpage\.action)/i;
+
+function isConfluenceUrl(text: string): boolean {
+  return CONFLUENCE_URL_RE.test(text);
+}
+
+function isPrdDocUrl(text: string): boolean {
+  return isGoogleDocUrl(text) || isConfluenceUrl(text);
+}
+
 function extractSlackReply(text: string): string | null {
   const m = text.match(/---\s*SLACK REPLY\s*---\s*\n([\s\S]*?)\n---\s*END SLACK REPLY\s*---/);
   return m ? m[1].trim() : null;
@@ -979,14 +1014,20 @@ function extractEpicBreakdown(text: string): string | null {
   return m ? m[1].trim() : null;
 }
 
-function extractQueriesJson(text: string): { anchor?: string; body: string }[] {
+function extractQueriesJson(text: string): { anchor?: string; body: string; severity: QuerySeverity }[] {
   const re = /```(?:json)?\s*queries?\s*\n([\s\S]*?)```/i;
   const m = text.match(re);
   if (!m) return [];
   try {
     const parsed = JSON.parse(m[1]);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((e: any) => typeof e === "object" && typeof e.body === "string");
+    return parsed
+      .filter((e: any) => typeof e === "object" && typeof e.body === "string")
+      .map((e: any) => ({
+        anchor: e.anchor as string | undefined,
+        body: e.body as string,
+        severity: (e.severity === "critical" ? "critical" : "nice-to-have") as QuerySeverity,
+      }));
   } catch {
     return [];
   }
@@ -1083,6 +1124,7 @@ function discoverPrdContextFromState(
     body: q.body,
     anchor: q.anchor ?? "",
     commentId: commentIds.get(idx + 1) ?? "",
+    severity: q.severity,
   }));
 
   const ctx: PrdThreadContext = {
@@ -1185,12 +1227,25 @@ async function pollRunAndReply(
 
     const analyseStep = state.steps.find((s) => s.id === "analyse");
     const postQueriesStep = state.steps.find((s) => s.id === "post-queries");
-    const openPrStep = state.steps.find((s) => s.id === "open-pr");
 
     const analyseOutput = analyseStep?.output ?? "";
     const slackReply = extractSlackReply(analyseOutput);
     const epicBreakdown = extractEpicBreakdown(analyseOutput);
     const commentSummary = postQueriesStep?.output ?? "";
+
+    const queries = extractQueriesJson(analyseOutput);
+    const commentIds = parsePostedCommentIds(commentSummary);
+    const trackedQueries: PrdQueryInfo[] = queries.map((q, idx) => ({
+      index: idx + 1,
+      body: q.body,
+      anchor: q.anchor ?? "",
+      commentId: commentIds.get(idx + 1) ?? "",
+      severity: q.severity,
+    }));
+    const docId = extractDocId(docUrl);
+
+    const openTotal = trackedQueries.length;
+    const criticalCount = trackedQueries.filter((q) => q.severity === "critical").length;
 
     const postedMatch = commentSummary.match(/Posted (\d+)\/(\d+) comments/);
     const skippedMatch = commentSummary.match(/(\d+) skipped as duplicates/);
@@ -1199,7 +1254,9 @@ async function pollRunAndReply(
         (skippedMatch ? ` (${skippedMatch[1]} skipped as duplicates)` : "")
       : "";
 
-    const prUrlMatch = (openPrStep?.output ?? "").match(/PR_URL=(https?:\/\/\S+)/);
+    const questionCountLine = openTotal > 0
+      ? `*Open questions:* ${openTotal}${criticalCount > 0 ? ` (${criticalCount} critical)` : ""}`
+      : "";
 
     const body = [
       `*PRD Analysis Complete* — \`${repoId}\``,
@@ -1207,8 +1264,8 @@ async function pollRunAndReply(
       slackReply ?? "_No verdict produced — check the full run._",
       "",
       commentLine,
+      questionCountLine,
       `<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View full analysis in Archon Hub>`,
-      prUrlMatch ? `<${prUrlMatch[1]}|View PR on GitHub>` : "",
       "",
       epicBreakdown ? `*Epic & Tasks*\n${epicBreakdown}` : "",
     ]
@@ -1217,23 +1274,102 @@ async function pollRunAndReply(
 
     await client.chat.postMessage({ channel, thread_ts, text: body });
 
+    // Post each critical question as a separate block with an owner picker
+    const criticalQueries = trackedQueries.filter((q) => q.severity === "critical");
+    for (const q of criticalQueries) {
+      const gdocLink = q.commentId
+        ? `<https://docs.google.com/document/d/${docId}/edit?disco=${q.commentId}|View in GDoc>`
+        : "";
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `[Q${q.index}] ${q.body}`,
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `*[Q${q.index}]* ${q.body}${gdocLink ? `\n${gdocLink}` : ""}`,
+            },
+          },
+          {
+            type: "actions",
+            elements: [
+              {
+                type: "users_select",
+                placeholder: { type: "plain_text", text: "Assign owner..." },
+                action_id: "prd_assign_owner",
+              },
+            ],
+            block_id: `prd_assign_${runId}_${q.index}`,
+          },
+        ],
+        metadata: {
+          event_type: "prd_assign_context",
+          event_payload: { runId, repoId, channel, threadTs: thread_ts, queryIndex: q.index, docId },
+        },
+      });
+    }
+
+    // Always post "Raise PR" / "Create FR Card" / "Cancel" confirmation buttons
+    const deliverableStep = state.steps.find((s) => s.id === "deliverable");
+    const prdPrId = storePrdPrProposal({
+      repoId,
+      runId,
+      channel,
+      threadTs: thread_ts,
+      docUrl,
+    });
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: "Click *Raise PR* to open a pull request, or *Create FR Card* to create Freshrelease cards from the deliverable.",
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: deliverableStep?.output
+              ? "_The PRD analysis deliverable is ready. Click *Raise PR* to open a pull request, or *Create FR Card* to create Freshrelease cards._"
+              : "_Click *Raise PR* to open a pull request. Note: the deliverable step produced no output — the PR/cards may be empty._",
+          },
+        },
+        {
+          type: "actions",
+          elements: [
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Raise PR" },
+              style: "primary",
+              action_id: "prd_confirm_pr",
+              value: prdPrId,
+            },
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Create FR Card" },
+              action_id: "prd_create_fr_card",
+              value: prdPrId,
+            },
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Cancel" },
+              action_id: "prd_cancel_pr",
+              value: prdPrId,
+            },
+          ],
+        },
+      ],
+    });
+
     // Save thread context for reply handling and re-run detection
     try {
-      const queries = extractQueriesJson(analyseOutput);
-      const commentIds = parsePostedCommentIds(commentSummary);
-      const trackedQueries: PrdQueryInfo[] = queries.map((q, idx) => ({
-        index: idx + 1,
-        body: q.body,
-        anchor: q.anchor ?? "",
-        commentId: commentIds.get(idx + 1) ?? "",
-      }));
       if (trackedQueries.length > 0) {
         savePrdThread({
           channel,
           threadTs: thread_ts,
           repoId,
           docUrl,
-          docId: extractDocId(docUrl),
+          docId,
           runId,
           queries: trackedQueries,
         });
@@ -1267,18 +1403,20 @@ app.command("/archon-prd", async ({ command, ack, respond, client, logger }) => 
     await respond({
       response_type: "ephemeral",
       text: [
-        `*Usage*: \`/archon-prd [<repo-id>] <google-doc-url>\``,
+        `*Usage*: \`/archon-prd [<repo-id>] <doc-url>\``,
         `• <repo-id> — optional; defaults to \`ARCHON_DEFAULT_REPO_ID\``,
+        `• Supports Google Docs and Confluence (Server/DC) URLs`,
         `• Example: \`/archon-prd ubx-ui https://docs.google.com/document/d/1abc.../edit\``,
+        `• Example: \`/archon-prd ubx-ui https://confluence.example.com/spaces/TEAM/pages/12345/My+PRD\``,
       ].join("\n"),
     });
     return;
   }
 
-  if (!isGoogleDocUrl(docUrl)) {
+  if (!isPrdDocUrl(docUrl)) {
     await respond({
       response_type: "ephemeral",
-      text: `That doesn't look like a Google Docs URL. Expected something like \`https://docs.google.com/document/d/...\``,
+      text: `That doesn't look like a supported document URL. Expected a Google Docs URL (\`https://docs.google.com/document/d/...\`) or a Confluence page URL.`,
     });
     return;
   }
@@ -1333,21 +1471,20 @@ app.command("/archon-prd", async ({ command, ack, respond, client, logger }) => 
       ? `\n_Re-run detected — incorporating ${priorThreads.length} prior thread(s)._`
       : "";
 
-    await respond({
-      response_type: "in_channel",
-      text:
-        `*PRD analysis started* on \`${inv.repoId}\` for <${docUrl}|Open PRD>\n` +
+    const rootTs = await postSlashAnchor(
+      client,
+      command.channel_id,
+      `*PRD analysis started* on \`${inv.repoId}\` for <${docUrl}|Open PRD>\n` +
         `Run: \`${runId}\` | <${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>\n` +
         `_I'll reply in this thread when the analysis is done._` +
-        rerunNote,
-    });
+        rerunNote
+    );
 
-    const thread_ts = command.ts ?? "";
     pollRunAndReply(
       runId,
       inv.repoId,
       command.channel_id,
-      thread_ts,
+      rootTs,
       docUrl,
       client,
       logger
@@ -1740,6 +1877,51 @@ function storeProposal(p: StoredProposal): string {
   return id;
 }
 
+// ─── PRD PR proposal store (confirmation before raising PR) ─────────────────
+
+interface PrdPrProposal {
+  repoId: string;
+  runId: string;
+  channel: string;
+  threadTs: string;
+  docUrl: string;
+}
+
+const PRD_PR_PROPOSAL_TTL_MS = 10 * 60 * 1000;
+
+interface PrdPrEntry {
+  proposal: PrdPrProposal;
+  timer: NodeJS.Timeout;
+}
+
+const prdPrStore = new Map<string, PrdPrEntry>();
+let prdPrCounter = 0;
+
+function armPrdPrTimer(id: string): NodeJS.Timeout {
+  return setTimeout(() => prdPrStore.delete(id), PRD_PR_PROPOSAL_TTL_MS);
+}
+
+function storePrdPrProposal(p: PrdPrProposal): string {
+  const id = `prd-pr-${++prdPrCounter}-${Date.now()}`;
+  prdPrStore.set(id, { proposal: p, timer: armPrdPrTimer(id) });
+  return id;
+}
+
+function getPrdPrProposal(id: string): PrdPrProposal | undefined {
+  const entry = prdPrStore.get(id);
+  if (!entry) return undefined;
+  clearTimeout(entry.timer);
+  entry.timer = armPrdPrTimer(id);
+  return entry.proposal;
+}
+
+function deletePrdPrProposal(id: string): void {
+  const entry = prdPrStore.get(id);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  prdPrStore.delete(id);
+}
+
 // ─── Block Kit confirm UI ───────────────────────────────────────────────────
 
 function proposalBlocks(proposalId: string, p: StoredProposal) {
@@ -1829,6 +2011,128 @@ function proposalBlocks(proposalId: string, p: StoredProposal) {
       ],
     },
   ];
+}
+
+// ─── Pending thread-reply asks (debug workflow) ─────────────────────────────
+
+interface PendingThreadAsk {
+  runId: string;
+  repoId: string;
+  channel: string;
+  threadTs: string;
+  expectFiles: string[];
+}
+
+const pendingThreadAsks = new Map<string, PendingThreadAsk>();
+
+function registerPendingThreadAsk(ask: PendingThreadAsk): void {
+  pendingThreadAsks.set(`${ask.channel}:${ask.threadTs}`, ask);
+}
+
+function lookupPendingThreadAsk(channel: string, threadTs: string): PendingThreadAsk | undefined {
+  return pendingThreadAsks.get(`${channel}:${threadTs}`);
+}
+
+function removePendingThreadAsk(channel: string, threadTs: string): void {
+  pendingThreadAsks.delete(`${channel}:${threadTs}`);
+}
+
+function classifyFileByExtension(filename: string): "har" | "screenshot" | "attachment" {
+  const ext = path.extname(filename).toLowerCase();
+  if (ext === ".har") return "har";
+  if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"].includes(ext)) return "screenshot";
+  return "attachment";
+}
+
+async function downloadSlackFile(
+  urlPrivateDownload: string,
+  destPath: string
+): Promise<void> {
+  const token = process.env.SLACK_BOT_TOKEN;
+  if (!token) throw new Error("SLACK_BOT_TOKEN not set");
+  const res = await fetch(urlPrivateDownload, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Slack file download failed: HTTP ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+  fs.writeFileSync(destPath, buf);
+}
+
+async function downloadAndForwardThreadReply(
+  ask: PendingThreadAsk,
+  message: any,
+  client: any,
+  logger: any
+): Promise<void> {
+  const text = (message.text ?? "").trim();
+  const slackFiles = message.files ?? [];
+
+  const uploadsDir = path.join(
+    HUB_STATE_DIR, ask.repoId, "runs", ask.runId, "uploads"
+  );
+
+  const downloadedFiles: { kind: string; path: string }[] = [];
+
+  for (const f of slackFiles) {
+    const downloadUrl = f.url_private_download ?? f.url_private;
+    if (!downloadUrl) continue;
+
+    const originalName = f.name ?? `file_${Date.now()}`;
+    const destPath = path.join(uploadsDir, originalName);
+
+    try {
+      await downloadSlackFile(downloadUrl, destPath);
+      const kind = classifyFileByExtension(originalName);
+      downloadedFiles.push({ kind, path: destPath });
+      logger.info(`Downloaded ${kind} file: ${destPath}`);
+    } catch (err: any) {
+      logger.error(`Failed to download Slack file ${originalName}: ${err.message}`);
+    }
+  }
+
+  try {
+    const res = await fetch(
+      `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(ask.runId)}/thread-reply`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          by: message.user ?? "unknown",
+          text,
+          files: downloadedFiles,
+        }),
+      }
+    );
+    const data = await archonResponseJson<{ resumed?: boolean; error?: string }>(
+      res, "POST /api/runs/:id/thread-reply"
+    );
+
+    if (data.error) {
+      await client.chat.postMessage({
+        channel: ask.channel,
+        thread_ts: ask.threadTs,
+        text: `Failed to resume debug run: ${data.error}`,
+      });
+      return;
+    }
+
+    const filesSummary = downloadedFiles.length > 0
+      ? ` (${downloadedFiles.length} file(s): ${downloadedFiles.map((f) => f.kind).join(", ")})`
+      : "";
+    await client.chat.postMessage({
+      channel: ask.channel,
+      thread_ts: ask.threadTs,
+      text: `_Got it${filesSummary} — resuming the debug run..._`,
+    });
+  } catch (err: any) {
+    logger.error(`Failed to forward thread reply to Archon: ${err.message}`);
+    await client.chat.postMessage({
+      channel: ask.channel,
+      thread_ts: ask.threadTs,
+      text: `Error forwarding your reply to Archon: ${err.message}`,
+    });
+  }
 }
 
 // ─── Run event poller (milestones + approval detection) ─────────────────────
@@ -1924,6 +2228,22 @@ async function pollRunEvents(
                 ],
               },
             ],
+          });
+        }
+
+        if (ev.type === "awaiting_thread_reply" && ev.stepId) {
+          const askMsg = ev.prompt ?? "Please reply in this thread with the requested information.";
+          await client.chat.postMessage({
+            channel,
+            thread_ts,
+            text: askMsg,
+          });
+          registerPendingThreadAsk({
+            runId,
+            repoId,
+            channel,
+            threadTs: thread_ts,
+            expectFiles: Array.isArray(ev.expectFiles) ? ev.expectFiles : [],
           });
         }
 
@@ -2262,6 +2582,625 @@ app.action("harness_cancel", async ({ action, ack, body, client }) => {
   }
 });
 
+// ─── Button action: Raise PRD PR (confirmed) ───────────────────────────────
+app.action("prd_confirm_pr", async ({ action, ack, body, client, logger }) => {
+  await ack();
+  const prdPrId = (action as any).value;
+  const proposal = getPrdPrProposal(prdPrId);
+  if (!proposal) {
+    await client.chat.postMessage({
+      channel: (body as any).channel?.id,
+      text: "This PRD PR proposal has expired. Re-run `/archon-prd` to generate a new one.",
+    });
+    return;
+  }
+
+  const messageTs = (body as any).message?.ts;
+  const channel = (body as any).channel?.id;
+  const { repoId, runId: analysisRunId, threadTs, docUrl } = proposal;
+
+  if (messageTs && channel) {
+    await client.chat.update({
+      channel,
+      ts: messageTs,
+      text: "_Raising PR..._",
+      blocks: [
+        {
+          type: "section",
+          text: { type: "mrkdwn", text: "_Raising PR... You can still click *Create FR Card* in parallel._" },
+        },
+        {
+          type: "actions",
+          elements: [
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Create FR Card" },
+              action_id: "prd_create_fr_card",
+              value: prdPrId,
+            },
+          ],
+        },
+      ],
+    }).catch(() => {});
+  }
+
+  let deliverableContent: string;
+  try {
+    const runRes = await fetch(
+      `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(analysisRunId)}?repoId=${encodeURIComponent(repoId)}`
+    );
+    const state = await archonResponseJson<RunState>(runRes, "GET /api/runs/:id");
+    const deliverableStep = state.steps.find((s) => s.id === "deliverable");
+    if (!deliverableStep?.output) {
+      if (messageTs && channel) {
+        await client.chat.update({
+          channel,
+          ts: messageTs,
+          text: "Cannot raise a PR — the workflow's deliverable step produced no plan output.",
+          blocks: [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: "_Cannot raise a PR — the workflow's deliverable step produced no plan output. Re-run `/archon-prd` with a more detailed PRD or check the workflow logs._",
+              },
+            },
+          ],
+        }).catch(() => {});
+      }
+      const userId = (body as any).user?.id;
+      if (userId && channel) {
+        await client.chat.postEphemeral({
+          channel,
+          user: userId,
+          text: "Cannot raise a PR — the workflow's deliverable step produced no plan output. Re-run `/archon-prd` to generate a fresh analysis.",
+        }).catch(() => {});
+      }
+      return;
+    }
+    deliverableContent = deliverableStep.output;
+  } catch (err: any) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: `Error fetching analysis run: ${err.message}`,
+    });
+    return;
+  }
+
+  let result: RunResponse;
+  try {
+    result = await triggerWorkflow(repoId, "prd-raise-pr", `Raise PR for ${docUrl}`, {
+      deliverableContent,
+    });
+  } catch (err: any) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: `Error connecting to Archon server: ${err.message}`,
+    });
+    return;
+  }
+
+  if (result.error) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: `Failed to start PRD raise-PR workflow: ${result.error}`,
+    });
+    return;
+  }
+
+  const raiseRunId = result.runId ?? "";
+
+  pollPrdRaiseAndReply(raiseRunId, repoId, channel, threadTs, docUrl, client, logger).catch(
+    (err) => logger.error("pollPrdRaiseAndReply error:", err)
+  );
+});
+
+async function pollPrdRaiseAndReply(
+  runId: string,
+  repoId: string,
+  channel: string,
+  thread_ts: string,
+  docUrl: string,
+  client: any,
+  logger: any
+): Promise<void> {
+  const maxAttempts = 200;
+  const intervalMs = 3000;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+
+    let state: RunState;
+    try {
+      const res = await fetch(
+        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
+      );
+      state = await archonResponseJson<RunState>(res, "GET /api/runs/:id");
+    } catch {
+      continue;
+    }
+
+    if (state.status !== "success" && state.status !== "failed") continue;
+
+    if (state.status === "failed") {
+      const text = await formatRunFailureForSlack("Raise PRD PR failed", runId, repoId, state);
+      await client.chat.postMessage({ channel, thread_ts, text });
+      return;
+    }
+
+    const openPrStep = state.steps.find((s) => s.id === "open-pr");
+    const output = openPrStep?.output ?? "";
+    const branchMatch = output.match(/BRANCH=(\S+)/);
+    const prUrlMatch = output.match(/PR_URL=(https?:\/\/\S+)/);
+
+    const parts: string[] = [`*PRD PR raised* — \`${repoId}\``];
+    if (branchMatch) parts.push(`Branch: \`${branchMatch[1]}\``);
+    if (prUrlMatch) parts.push(`PR: <${prUrlMatch[1]}|View PR on GitHub>`);
+    parts.push(
+      `<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View raise-PR run in Archon Hub>`
+    );
+
+    await client.chat.postMessage({ channel, thread_ts, text: parts.join("\n") });
+    return;
+  }
+
+  await client.chat.postMessage({
+    channel,
+    thread_ts,
+    text:
+      `*PRD raise-PR timed out* — the run is still going.\n` +
+      `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
+  });
+}
+
+// ─── Button action: Cancel PRD PR ───────────────────────────────────────────
+app.action("prd_cancel_pr", async ({ action, ack, body, client }) => {
+  await ack();
+  const prdPrId = (action as any).value;
+  deletePrdPrProposal(prdPrId);
+  const channel = (body as any).channel?.id;
+  const messageTs = (body as any).message?.ts;
+  if (messageTs && channel) {
+    await client.chat.update({
+      channel,
+      ts: messageTs,
+      text: "Cancelled — re-run `/archon-prd` if you change your mind.",
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: "_Cancelled — re-run `/archon-prd` if you change your mind._",
+          },
+        },
+      ],
+    }).catch(() => {});
+  }
+});
+
+// ─── Button action: Create FR Card (opens confirmation modal) ───────────────
+
+function extractDeliverablePreview(content: string): string {
+  const lines = content.split("\n");
+  const preview: string[] = [];
+  for (const line of lines) {
+    if (/^epic:/i.test(line.trim()) || /^#+\s/.test(line.trim()) || /^[-*]\s/.test(line.trim())) {
+      preview.push(line);
+    }
+    if (preview.length >= 30) break;
+  }
+  if (preview.length === 0) {
+    return content.length > 2800 ? content.slice(0, 2800) + "\n…" : content;
+  }
+  const text = preview.join("\n");
+  return text.length > 2800 ? text.slice(0, 2800) + "\n…" : text;
+}
+
+app.action("prd_create_fr_card", async ({ action, ack, body, client, logger }) => {
+  await ack();
+  const prdPrId = (action as any).value;
+  const channel = (body as any).channel?.id;
+  const triggerId = (body as any).trigger_id;
+  const messageThreadTs = (body as any).message?.thread_ts ?? (body as any).message?.ts;
+
+  let proposal = getPrdPrProposal(prdPrId);
+  if (!proposal && channel) {
+    const ctx =
+      (messageThreadTs && lookupPrdThread(channel, messageThreadTs)) ||
+      lookupPrdThreadByChannel(channel) ||
+      (messageThreadTs && discoverPrdContextFromState(channel, messageThreadTs, logger)) ||
+      undefined;
+    if (ctx) {
+      proposal = {
+        repoId: ctx.repoId,
+        runId: ctx.runId,
+        channel: ctx.channel,
+        threadTs: ctx.threadTs,
+        docUrl: ctx.docUrl,
+      };
+      prdPrStore.set(prdPrId, { proposal, timer: armPrdPrTimer(prdPrId) });
+      logger.info(`prd_create_fr_card: recovered proposal from PrdThreadContext (run=${ctx.runId})`);
+    }
+  }
+  if (!proposal) {
+    await client.chat.postMessage({
+      channel: channel,
+      text: "This proposal has expired and could not be recovered. Re-run `/archon-prd` to generate a new one.",
+    });
+    return;
+  }
+
+  const { repoId, runId: analysisRunId, threadTs, docUrl } = proposal;
+
+  let deliverableContent: string;
+  try {
+    const runRes = await fetch(
+      `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(analysisRunId)}?repoId=${encodeURIComponent(repoId)}`
+    );
+    const state = await archonResponseJson<RunState>(runRes, "GET /api/runs/:id");
+    const deliverableStep = state.steps.find((s) => s.id === "deliverable");
+    if (!deliverableStep?.output) {
+      if (channel) {
+        await client.chat.postMessage({
+          channel,
+          thread_ts: threadTs,
+          text: "_Cannot create FR cards — the deliverable step produced no output. Re-run `/archon-prd` with a more detailed PRD._",
+        });
+      }
+      return;
+    }
+    deliverableContent = deliverableStep.output;
+  } catch (err: any) {
+    if (channel) {
+      await client.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text: `Error fetching analysis run: ${err.message}`,
+      });
+    }
+    return;
+  }
+
+  const preview = extractDeliverablePreview(deliverableContent);
+
+  try {
+    await client.views.open({
+      trigger_id: triggerId,
+      view: {
+        type: "modal",
+        callback_id: "prd_create_fr_card_submit",
+        title: { type: "plain_text", text: "Create FR Cards" },
+        submit: { type: "plain_text", text: "Create" },
+        close: { type: "plain_text", text: "Cancel" },
+        private_metadata: JSON.stringify({ prdPrId, repoId, runId: analysisRunId, channel, threadTs, docUrl }),
+        blocks: [
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `*Epic & Tasks preview:*\n${preview}`,
+            },
+          },
+          {
+            type: "divider",
+          },
+          {
+            type: "input",
+            block_id: "workspace",
+            element: {
+              type: "plain_text_input",
+              action_id: "workspace_input",
+              initial_value: "BILLING",
+              placeholder: { type: "plain_text", text: "Freshrelease workspace key" },
+            },
+            label: { type: "plain_text", text: "Workspace" },
+          },
+        ],
+      },
+    });
+  } catch (err: any) {
+    logger.error("prd_create_fr_card views.open failed:", err);
+    if (channel) {
+      await client.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text: `Failed to open confirmation modal: ${err.message}`,
+      });
+    }
+  }
+});
+
+// ─── View submission: Create FR Card confirmed ──────────────────────────────
+
+app.view("prd_create_fr_card_submit", async ({ ack, view, client, logger }) => {
+  await ack();
+
+  let meta: any;
+  try {
+    meta = JSON.parse(view.private_metadata);
+  } catch {
+    logger.error("prd_create_fr_card_submit: invalid private_metadata");
+    return;
+  }
+
+  const prdPrId: string = meta.prdPrId;
+  let proposal = getPrdPrProposal(prdPrId);
+  if (!proposal && meta.repoId && meta.runId && meta.channel) {
+    proposal = {
+      repoId: meta.repoId,
+      runId: meta.runId,
+      channel: meta.channel,
+      threadTs: meta.threadTs,
+      docUrl: meta.docUrl,
+    };
+    logger.info(`prd_create_fr_card_submit: recovered proposal from private_metadata (run=${meta.runId})`);
+  }
+  if (!proposal) {
+    logger.warn("prd_create_fr_card_submit: proposal expired and could not be recovered");
+    return;
+  }
+
+  const { repoId, runId: analysisRunId, channel, threadTs, docUrl } = proposal;
+  const workspace =
+    view.state?.values?.workspace?.workspace_input?.value?.trim() || "BILLING";
+
+  let deliverableContent: string;
+  try {
+    const runRes = await fetch(
+      `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(analysisRunId)}?repoId=${encodeURIComponent(repoId)}`
+    );
+    const state = await archonResponseJson<RunState>(runRes, "GET /api/runs/:id");
+    const deliverableStep = state.steps.find((s) => s.id === "deliverable");
+    deliverableContent = deliverableStep?.output ?? "";
+  } catch (err: any) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: `Error fetching deliverable for FR card creation: ${err.message}`,
+    });
+    return;
+  }
+
+  if (!deliverableContent) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: "_Cannot create FR cards — the deliverable is empty._",
+    });
+    return;
+  }
+
+  let result: RunResponse;
+  try {
+    result = await triggerWorkflow(
+      repoId,
+      "fr-card-creator",
+      `Create FR cards from PRD ${docUrl}`,
+      { requirement: deliverableContent, mode: "from-prd-md", workspace }
+    );
+  } catch (err: any) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: `Error connecting to Archon server: ${err.message}`,
+    });
+    return;
+  }
+
+  if (result.error) {
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: `Failed to start FR card creation: ${result.error}`,
+    });
+    return;
+  }
+
+  const frRunId = result.runId ?? "";
+  await client.chat.postMessage({
+    channel,
+    thread_ts: threadTs,
+    text:
+      `_Creating FR cards in \`${workspace}\`..._\n` +
+      `Run: \`${frRunId}\` | <${ARCHON_UI_URL}/?run=${frRunId}|View in Archon Hub>`,
+  });
+
+  pollFrCardAndReply(frRunId, repoId, channel, threadTs, docUrl, workspace, client, logger).catch(
+    (err) => logger.error("pollFrCardAndReply error:", err)
+  );
+});
+
+interface FRCreateEntry {
+  kind: string;
+  title: string;
+  key: string;
+  url: string;
+}
+
+interface FRCreateFailure {
+  kind: string;
+  title: string;
+  reason: string;
+}
+
+function parseFrCreateOutput(output: string): { successes: FRCreateEntry[]; failures: FRCreateFailure[]; total: number } {
+  const successes: FRCreateEntry[] = [];
+  const failures: FRCreateFailure[] = [];
+  const successRe = /^\+ (Epic|Task|Bug|Story) "(.+?)" → ([A-Z]+-\d+) \((https?:\/\/\S+)\)$/;
+  const failRe = /^FAIL (Epic|Task|Bug|Story) "(.+?)": (.+)$/;
+  const headerRe = /^Created (\d+)\/(\d+) issues/;
+  let total = 0;
+
+  for (const line of output.split("\n")) {
+    const sm = line.match(successRe);
+    if (sm) { successes.push({ kind: sm[1], title: sm[2], key: sm[3], url: sm[4] }); continue; }
+    const fm = line.match(failRe);
+    if (fm) { failures.push({ kind: fm[1], title: fm[2], reason: fm[3] }); continue; }
+    const hm = line.match(headerRe);
+    if (hm) { total = Number(hm[2]); }
+  }
+  if (total === 0) total = successes.length + failures.length;
+  return { successes, failures, total };
+}
+
+async function pollFrCardAndReply(
+  runId: string,
+  repoId: string,
+  channel: string,
+  thread_ts: string,
+  docUrl: string,
+  workspace: string,
+  client: any,
+  logger: any
+): Promise<void> {
+  const maxAttempts = 200;
+  const intervalMs = 3000;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+
+    let state: RunState;
+    try {
+      const res = await fetch(
+        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
+      );
+      state = await archonResponseJson<RunState>(res, "GET /api/runs/:id");
+    } catch {
+      continue;
+    }
+
+    if (state.status !== "success" && state.status !== "failed") continue;
+
+    if (state.status === "failed") {
+      const text = await formatRunFailureForSlack("FR card creation failed", runId, repoId, state);
+      await client.chat.postMessage({ channel, thread_ts, text });
+      return;
+    }
+
+    const createStep = state.steps.find((s) => s.id === "create");
+    const createOutput = createStep?.output ?? "";
+    const { successes, failures, total } = parseFrCreateOutput(createOutput);
+
+    const parts: string[] = [];
+
+    if (successes.length > 0 || failures.length > 0) {
+      parts.push(`*FR Cards Created* — \`${repoId}\` — created ${successes.length}/${total} in \`${workspace}\``);
+      parts.push("");
+      for (const s of successes) {
+        parts.push(`• <${s.url}|${s.key}> — ${s.kind}: ${s.title}`);
+      }
+      if (failures.length > 0) {
+        parts.push("");
+        parts.push("*Failed:*");
+        for (const f of failures) {
+          parts.push(`• ${f.kind} "${f.title}": ${f.reason}`);
+        }
+      }
+    } else {
+      const summaryStep = state.steps.find((s) => s.id === "summary");
+      const output = summaryStep?.output || createOutput || "Cards created (no summary available).";
+      parts.push(`*FR Cards Created* — \`${repoId}\``);
+      parts.push("");
+      parts.push(trimOutput(output));
+    }
+
+    parts.push("");
+    parts.push(`<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View run in Archon Hub>`);
+
+    await client.chat.postMessage({ channel, thread_ts, text: parts.join("\n") });
+    return;
+  }
+
+  await client.chat.postMessage({
+    channel,
+    thread_ts,
+    text:
+      `*FR card creation timed out* — the run is still going.\n` +
+      `<${ARCHON_UI_URL}/?run=${runId}|View in Archon Hub>`,
+  });
+}
+
+// ─── Action: Assign owner to a PRD open question ───────────────────────────
+app.action("prd_assign_owner", async ({ action, ack, body, client, logger }) => {
+  await ack();
+
+  const selectedUser = (action as any).selected_user as string | undefined;
+  if (!selectedUser) return;
+
+  const message = (body as any).message;
+  const metadata = message?.metadata?.event_payload as
+    | { runId: string; repoId: string; channel: string; threadTs: string; queryIndex: number; docId?: string }
+    | undefined;
+  if (!metadata) {
+    logger.warn("prd_assign_owner: no metadata on message");
+    return;
+  }
+
+  const { repoId, channel: ctxChannel, threadTs, queryIndex, docId } = metadata;
+  const channel = (body as any).channel?.id ?? ctxChannel;
+  const messageTs = message?.ts;
+
+  const threadCtx = lookupPrdThread(ctxChannel, threadTs);
+  if (threadCtx) {
+    const q = threadCtx.queries.find((q) => q.index === queryIndex);
+    if (q) {
+      q.assignedUserId = selectedUser;
+      savePrdThread(threadCtx);
+    }
+  }
+
+  if (messageTs && channel) {
+    const originalSection = message?.blocks?.[0];
+    await client.chat.update({
+      channel,
+      ts: messageTs,
+      text: `[Q${queryIndex}] Assigned to <@${selectedUser}>`,
+      blocks: [
+        originalSection ?? {
+          type: "section",
+          text: { type: "mrkdwn", text: `*[Q${queryIndex}]* (question)` },
+        },
+        {
+          type: "context",
+          elements: [{ type: "mrkdwn", text: `Assigned to <@${selectedUser}>` }],
+        },
+      ],
+    }).catch((err: any) => logger.error("prd_assign_owner chat.update failed:", err));
+  }
+
+  try {
+    const q = threadCtx?.queries.find((q) => q.index === queryIndex);
+    const questionBody = q?.body ?? "(PRD open question)";
+    const gdocLink = q?.commentId && docId
+      ? `https://docs.google.com/document/d/${docId}/edit?disco=${q.commentId}`
+      : "";
+
+    let threadPermalink = "";
+    try {
+      const plRes = await client.chat.getPermalink({ channel: ctxChannel, message_ts: threadTs });
+      threadPermalink = (plRes as any).permalink ?? "";
+    } catch { /* best effort */ }
+
+    const dmParts = [
+      `You've been assigned to answer a PRD open question:`,
+      `> ${questionBody}`,
+    ];
+    if (gdocLink) dmParts.push(`<${gdocLink}|View in Google Docs>`);
+    if (threadPermalink) dmParts.push(`<${threadPermalink}|Go to Slack thread>`);
+
+    const imRes = await client.conversations.open({ users: selectedUser });
+    const dmChannel = (imRes as any).channel?.id;
+    if (dmChannel) {
+      await client.chat.postMessage({ channel: dmChannel, text: dmParts.join("\n") });
+    }
+  } catch (err: any) {
+    logger.error("prd_assign_owner DM failed:", err);
+  }
+});
+
 // ─── Button action: Approve (mid-run approval gate) ─────────────────────────
 app.action("approval_approve", async ({ action, ack, body, client, logger }) => {
   await ack();
@@ -2523,6 +3462,14 @@ app.message(async ({ message, client, logger }) => {
   if (m.channel_type === "im") return;
   if (m.subtype || m.bot_id) return;
   if (!m.thread_ts) return;
+
+  // Check for pending debug workflow thread-reply asks first
+  const threadAsk = lookupPendingThreadAsk(m.channel, m.thread_ts);
+  if (threadAsk) {
+    removePendingThreadAsk(m.channel, m.thread_ts);
+    await downloadAndForwardThreadReply(threadAsk, m, client, logger);
+    return;
+  }
 
   const ctx = lookupPrdThread(m.channel, m.thread_ts) ?? lookupPrdThreadByChannel(m.channel);
   if (!ctx) return;

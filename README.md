@@ -139,6 +139,8 @@ Step kinds:
 | `fr-comment`   | Post a comment on a Freshrelease task (`frUrl`, `bodyFrom`) |
 | `workflow`     | Dispatch a child workflow (`workflowFrom`, `childWorkflow`, `inputsFrom`) |
 | `approval`     | Pause the run and wait for a human to approve or reject before continuing (`surface: slack\|ui\|both`, `approvalTimeoutMs`) |
+| `wait-thread-reply` | Pause the run, post a question in the Slack thread, and resume when the user replies (with optional file attachments: HAR, screenshots). `expectFiles`, `threadReplyTimeoutMs` |
+| `har-analyze`  | Parse a HAR file and produce a structured summary of API calls grouped by status (failed, empty bodies, all). `harPathFrom`, `harPath`, `apiPrefix` |
 
 Steps support an optional `when:` field — a template expression that is evaluated at
 runtime. When the rendered value is empty, `"false"`, `"no"`, or `"0"`, the step is
@@ -215,6 +217,7 @@ Templating uses `{{inputs.<id>}}` and `{{steps.<id>.output}}`.
 | GET    | `/api/runs/:id/events?repoId=&offset=` | Tail run events (NDJSON). Used for milestone polling. |
 | POST   | `/api/runs/:id/approve`       | Approve a pending approval gate (`{by, comment?}`) |
 | POST   | `/api/runs/:id/reject`        | Reject a pending approval gate (`{by, reason?}`) |
+| POST   | `/api/runs/:id/thread-reply`  | Resume a `wait-thread-reply` step (`{by, text, files[]}`) |
 | POST   | `/api/route-intent`           | Legacy shim — delegates to `/api/harness/route`, returns old format |
 | POST   | `/api/smart-reply`            | Legacy shim — delegates to `/api/harness/route`, returns old format |
 | GET    | `/api/policy`                 | Read-only policy config (`allowed_repos`, `allowed_workflows`, `allowed_slack_channels`) |
@@ -292,6 +295,7 @@ prompt and an LLM-based intent router picks the best workflow automatically:
 | "analyze FR BILLING-10444" | `fr-analyze` |
 | "write tests for src/pages/billing/InvoiceList.tsx" | `test-write` |
 | "raise PR" | `pr-raise` |
+| "debug the invoices page" | `debug` (interactive thread) |
 | `https://docs.google.com/document/d/…` | `prd-analysis` |
 
 The router posts the chosen workflow + reason in Slack with **Run / Pick another
@@ -310,6 +314,29 @@ works after a diagnosis.
 `/archon-prd` reads the PRD from the linked Google Doc, analyses it against the
 repo codebase, posts open queries as comments on the doc, and replies in-thread
 with a finalised/not-finalised verdict plus a summary of the top open questions.
+
+After every analysis the bot also:
+- Shows the **total open question count** and how many are **critical**.
+- Posts each **critical question** as its own Slack message with a user-picker
+  so you can assign an owner. When an owner is picked, the assignee receives a
+  DM with a link to the Google Doc comment and the Slack thread.
+- **Always** shows *Raise PR / Cancel* buttons (even when the deliverable step
+  produced no output — clicking Raise PR in that case shows an error).
+
+**Severity field in the workflow prompt:** The target repo's
+`.archon/workflows/prd-analysis.yaml` `analyse` step must emit a `severity`
+field per query (`"critical"` or `"nice-to-have"`). Mark a question critical
+only when the PRD cannot be implemented without an answer (e.g. missing API
+contract, undefined data shape, conflicting requirement). Example:
+
+```json
+[
+  { "anchor": "...", "body": "...", "severity": "critical" },
+  { "anchor": "...", "body": "...", "severity": "nice-to-have" }
+]
+```
+
+Queries without a `severity` field default to `"nice-to-have"`.
 
 ### 2. @mentions (tag the bot in any channel)
 
@@ -367,7 +394,7 @@ fix the login bug in ubx-ui
 In your Slack app manifest / settings:
 
 - **Bot Token Scopes**: `app_mentions:read`, `chat:write`, `commands`, `im:history`,
-  `im:read`, `im:write`, `channels:history`, `groups:history`
+  `im:read`, `im:write`, `users:read`, `channels:history`, `groups:history`
 - **Event Subscriptions**: subscribe the bot to `app_mention` and `message.im`
 - **Interactivity**: enable Interactivity & Shortcuts (for the confirm buttons)
 - **Slash Commands**: `/archon-dev`, `/archon-harness`, `/archon-prd`, `/archon-add-repo`
@@ -475,6 +502,7 @@ works here.
 | `pr-raise` | "raise PR" / "open PR" | Push branch, auto-generate title+body, create PR via `gh` or REST |
 | `dev` | Feature request | Plan → implement → validate → self-review |
 | `fix-bug` | "fix" / "bug" | Diagnose → fix → test → review |
+| `debug` | "debug" | Interactive: ask for HAR/screenshots/creds in-thread → parse HAR → cross-ref codebase → diagnose BE vs UI root cause |
 | `ask` | General question | Read-only codebase Q&A |
 | `explain-codebase` | "explain" / "how does" | Walk through code structure |
 

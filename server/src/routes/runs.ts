@@ -3,7 +3,7 @@ import { loadConfig } from "../config";
 import { findWorkflow } from "../workflows";
 import type { WorkflowInput } from "../workflows";
 import { requireRepo } from "../repos";
-import { startRun, getActiveRun, resolveApproval, rejectApproval } from "../runner";
+import { startRun, getActiveRun, resolveApproval, rejectApproval, resolveThreadReply } from "../runner";
 import { findStateByRunId, loadState, readLog, readEvents, appendEvent } from "../runner/state";
 import { extractDocId, replyToComment, addComment, suggestEdits } from "../integrations/gdocs";
 
@@ -17,7 +17,10 @@ const INPUT_EXTRACTORS: Record<string, (text: string) => string | undefined> = {
   frUrl: (t) =>
     t.match(/https?:\/\/[^\s]+freshrelease\.com\/ws\/[^/\s]+\/tasks\/[^\s)<>]+/i)?.[0] ??
     t.match(/\b[A-Z][A-Z0-9]+-\d+\b/)?.[0],
-  docUrl: (t) => t.match(/https?:\/\/docs\.google\.com\/document\/[^\s)<>]+/i)?.[0],
+  docUrl: (t) =>
+    t.match(/https?:\/\/docs\.google\.com\/document\/[^\s)<>]+/i)?.[0] ??
+    t.match(/https?:\/\/[^\s)<>]*(?:atlassian\.net\/wiki|confluence\.)[^\s)<>]*/i)?.[0] ??
+    t.match(/https?:\/\/[^\s)<>]*\/spaces\/[^/]+\/pages\/\d+[^\s)<>]*/i)?.[0],
   pr: (t) =>
     t.match(/https?:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+[^\s)<>]*/i)?.[0] ??
     t.match(/(?:^|\s)#(\d+)(?:\s|$)/)?.[1],
@@ -156,6 +159,25 @@ runRoutes.post("/runs/:id/reject", async (req: Request<{ id: string }>, res: Res
     return;
   }
   res.json({ rejected: true, by, runId: id });
+});
+
+runRoutes.post("/runs/:id/thread-reply", async (req: Request<{ id: string }>, res: Response) => {
+  const { id } = req.params;
+  const { by, text, files } = req.body ?? {};
+  if (!by) {
+    res.status(400).json({ error: "by is required" });
+    return;
+  }
+  const ok = resolveThreadReply(id, {
+    by,
+    text: text ?? "",
+    files: Array.isArray(files) ? files : [],
+  });
+  if (!ok) {
+    res.status(404).json({ error: "No pending thread-reply wait for this run" });
+    return;
+  }
+  res.json({ resumed: true, by, runId: id });
 });
 
 runRoutes.post("/gdoc-reply", async (req: Request, res: Response) => {

@@ -13,6 +13,13 @@
       "origin": "https://github.com/freshdesk/freshid-ui-v2",
       "defaultBranch": "master",
       "addedAt": "2026-04-22T10:47:44.514Z"
+    },
+    {
+      "id": "freshworks-omnibar-v2",
+      "name": "freshworks-omnibar-v2",
+      "origin": "https://github.com/freshdesk/freshworks-omnibar-v2",
+      "defaultBranch": "master",
+      "addedAt": "2026-04-28T09:10:07.423Z"
     }
   ]
 }

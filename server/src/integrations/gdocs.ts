@@ -175,14 +175,22 @@ export interface SuggestEditsResult {
   skipped: { anchor: string; reason: string }[];
 }
 
+function normalizeWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function findAnchorIn(docText: string, anchor: string): boolean {
+  return normalizeWhitespace(docText).includes(normalizeWhitespace(anchor));
+}
+
 /**
  * Posts each proposed edit as a comment on the Google Doc so the owner can
- * review and apply them manually. The Google Docs API does not support
- * creating tracked-change suggestions programmatically, so comments are the
- * safest non-destructive alternative.
+ * review and apply them manually.
  *
- * Each edit's `anchor` identifies the text to change and `replacement` is the
- * proposed new text.
+ * Each edit's `anchor` is verified against the current doc text; edits whose
+ * anchor cannot be found are skipped. For found anchors the comment body
+ * quotes the original text and presents the replacement, and the Drive
+ * `quotedFileContent` field is set for clients that honour it.
  */
 export async function suggestEdits(
   docId: string,
@@ -191,6 +199,7 @@ export async function suggestEdits(
   if (!edits || edits.length === 0) return { applied: 0, skipped: [] };
 
   const { drive } = getClients();
+  const docText = await fetchDocText(docId);
   const skipped: { anchor: string; reason: string }[] = [];
   let applied = 0;
 
@@ -200,19 +209,27 @@ export async function suggestEdits(
       continue;
     }
 
+    if (!findAnchorIn(docText, edit.anchor)) {
+      skipped.push({ anchor: edit.anchor, reason: "anchor not found in doc" });
+      continue;
+    }
+
     const body = [
-      `Suggested edit:`,
+      `Original:`,
+      `"${truncate(edit.anchor, 200)}"`,
       ``,
-      `Find: "${truncate(edit.anchor, 200)}"`,
-      ``,
-      `Replace with: "${truncate(edit.replacement, 500)}"`,
+      `Suggested:`,
+      truncate(edit.replacement, 1000),
     ].join("\n");
 
     try {
       await drive.comments.create({
         fileId: docId,
         fields: "id",
-        requestBody: { content: body },
+        requestBody: {
+          content: body,
+          quotedFileContent: { mimeType: "text/plain", value: edit.anchor },
+        },
       });
       applied++;
     } catch (err: any) {

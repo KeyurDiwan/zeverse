@@ -14,6 +14,14 @@ import {
   CommentResult,
   type SuggestEdit,
 } from "../integrations/gdocs";
+import {
+  isConfluenceUrl,
+  extractPageId,
+  fetchPageText as confluenceFetchPageText,
+  listExistingComments as confluenceListExistingComments,
+  listCommentsDetailed as confluenceListCommentsDetailed,
+  addComment as confluenceAddComment,
+} from "../integrations/confluence";
 
 export async function executeGDocFetchStep(
   step: WorkflowStep,
@@ -28,8 +36,23 @@ export async function executeGDocFetchStep(
 
   if (!raw) {
     throw new Error(
-      `[${step.id}] No Google Doc URL provided. Set docUrl on the step or pass inputs.docUrl.`
+      `[${step.id}] No document URL provided. Set docUrl on the step or pass inputs.docUrl.`
     );
+  }
+
+  if (isConfluenceUrl(raw)) {
+    const pageId = extractPageId(raw);
+    appendLog(repoId, runId, `[${step.id}] Fetching Confluence page ${pageId}`);
+
+    const text = await confluenceFetchPageText(pageId);
+    appendLog(repoId, runId, `[${step.id}] Fetched ${text.length} chars from Confluence`);
+
+    if (!step.includeComments) return text;
+
+    const comments = await confluenceListCommentsDetailed(pageId);
+    appendLog(repoId, runId, `[${step.id}] Fetched ${comments.length} comments (includeComments=true)`);
+    const commentsJson = JSON.stringify(comments, null, 2);
+    return `${text}\n\n--- COMMENTS ---\n${commentsJson}\n--- END COMMENTS ---\n`;
   }
 
   const docId = extractDocId(raw);
@@ -90,11 +113,9 @@ export async function executeGDocCommentStep(
 
   if (!raw) {
     throw new Error(
-      `[${step.id}] No Google Doc URL provided. Set docUrl on the step or pass inputs.docUrl.`
+      `[${step.id}] No document URL provided. Set docUrl on the step or pass inputs.docUrl.`
     );
   }
-
-  const docId = extractDocId(raw);
 
   const sourceStepId = step.queriesFrom;
   if (!sourceStepId || !ctx.steps[sourceStepId]) {
@@ -116,8 +137,13 @@ export async function executeGDocCommentStep(
     return "No queries to post as comments.\n";
   }
 
+  const useConfluence = isConfluenceUrl(raw);
+  const targetId = useConfluence ? extractPageId(raw) : extractDocId(raw);
+
   appendLog(repoId, runId, `[${step.id}] Fetching existing comments for dedup...`);
-  const existing = await listExistingComments(docId);
+  const existing = useConfluence
+    ? await confluenceListExistingComments(targetId)
+    : await listExistingComments(targetId);
   appendLog(repoId, runId, `[${step.id}] Found ${existing.size} existing open comments`);
 
   const results: CommentResult[] = [];
@@ -138,7 +164,9 @@ export async function executeGDocCommentStep(
     }
 
     try {
-      const { commentId } = await addComment(docId, trimmedBody);
+      const { commentId } = useConfluence
+        ? await confluenceAddComment(targetId, trimmedBody)
+        : await addComment(targetId, trimmedBody);
       existing.add(trimmedBody);
       appendLog(
         repoId,
@@ -166,7 +194,7 @@ export async function executeGDocCommentStep(
   );
 
   return [
-    `Posted ${posted}/${queries.length} comments on doc ${docId} (${skipped} skipped as duplicates):`,
+    `Posted ${posted}/${queries.length} comments on doc ${targetId} (${skipped} skipped as duplicates):`,
     ...lines,
   ].join("\n") + "\n";
 }
@@ -207,7 +235,13 @@ export async function executeGDocReplyStep(
   const raw =
     renderTemplate(step.docUrl ?? "", ctx) || ctx.inputs.docUrl || "";
   if (!raw)
-    throw new Error(`[${step.id}] No Google Doc URL. Set docUrl or inputs.docUrl.`);
+    throw new Error(`[${step.id}] No document URL. Set docUrl or inputs.docUrl.`);
+
+  if (isConfluenceUrl(raw)) {
+    appendLog(repoId, runId, `[${step.id}] Confluence URL — reply not supported, skipping`);
+    return "Confluence URL — reply-to-comment not supported, skipping.\n";
+  }
+
   const docId = extractDocId(raw);
 
   const sourceStepId = step.repliesFrom;
@@ -259,7 +293,13 @@ export async function executeGDocResolveStep(
   const raw =
     renderTemplate(step.docUrl ?? "", ctx) || ctx.inputs.docUrl || "";
   if (!raw)
-    throw new Error(`[${step.id}] No Google Doc URL. Set docUrl or inputs.docUrl.`);
+    throw new Error(`[${step.id}] No document URL. Set docUrl or inputs.docUrl.`);
+
+  if (isConfluenceUrl(raw)) {
+    appendLog(repoId, runId, `[${step.id}] Confluence URL — resolve not supported, skipping`);
+    return "Confluence URL — resolve-comment not supported, skipping.\n";
+  }
+
   const docId = extractDocId(raw);
 
   const sourceStepId = step.resolvesFrom;
@@ -318,7 +358,13 @@ export async function executeGDocSuggestStep(
   const raw =
     renderTemplate(step.docUrl ?? "", ctx) || ctx.inputs.docUrl || "";
   if (!raw)
-    throw new Error(`[${step.id}] No Google Doc URL. Set docUrl or inputs.docUrl.`);
+    throw new Error(`[${step.id}] No document URL. Set docUrl or inputs.docUrl.`);
+
+  if (isConfluenceUrl(raw)) {
+    appendLog(repoId, runId, `[${step.id}] Confluence URL — suggest-edits not supported, skipping`);
+    return "Confluence URL — suggest-edits not supported, skipping.\n";
+  }
+
   const docId = extractDocId(raw);
 
   const sourceStepId = step.suggestsFrom;

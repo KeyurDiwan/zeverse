@@ -10,6 +10,7 @@ const WORKFLOW_KEYWORDS: [RegExp, string][] = [
   [/\b(create\s+epic|create\s+task|fr\s+card|card\s+creator)\b/i, "fr-card-creator"],
   [/\b(write\s+tests?|add\s+tests?|generate\s+tests?)\b/i, "test-write"],
   [/\b(raise\s+pr|open\s+pr|create\s+pr|submit\s+pr)\b/i, "pr-raise"],
+  [/\bdebug\b/i, "debug"],
   [/\b(fix|bug|broken|crash|error)\b/i, "fix-bug"],
   [/\b(review|pr\b|pull\s*request|code\s+review)\b/i, "code-review"],
   [/\blint\b/i, "lint-fix"],
@@ -17,7 +18,7 @@ const WORKFLOW_KEYWORDS: [RegExp, string][] = [
   [/\b(explain|understand|walk\s*me\s*through|how\s*does)\b/i, "explain-codebase"],
   [/\b(upgrade|bump)\b/i, "upgrade-dep"],
   [/\bupdate\b.*\b(dep|dependency|package)\b/i, "upgrade-dep"],
-  [/\bprd\b|docs\.google\.com\/document/i, "prd-analysis"],
+  [/\bprd\b|docs\.google\.com\/document|atlassian\.net\/wiki\/|confluence\.|\/spaces\/[^/]+\/pages\//i, "prd-analysis"],
 ];
 
 function resolveAlias(workflow: string, available: Set<string>): string | null {
