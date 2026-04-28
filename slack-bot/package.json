@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "ts-node --transpile-only src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "tsc && node --test dist/format-slack-message.test.js"
   },
   "dependencies": {
     "@slack/bolt": "^4.1.0",

@@ -129,18 +129,33 @@ export async function listExistingComments(docId: string): Promise<Set<string>> 
   return bodies;
 }
 
+export interface AddCommentOptions {
+  /** Verbatim substring from the doc; enables anchored threads when set. */
+  quotedAnchor?: string;
+}
+
 /**
- * Posts an unanchored comment on a Google Doc via the Drive v3 comments API.
+ * Posts a comment on a Google Doc via the Drive v3 comments API.
+ * With `quotedAnchor`, sets `quotedFileContent` so Google Docs anchors the thread.
  */
 export async function addComment(
   docId: string,
-  body: string
+  body: string,
+  options?: AddCommentOptions
 ): Promise<{ commentId: string }> {
   const { drive } = getClients();
+  const trimmedQuote = options?.quotedAnchor?.trim();
+  const requestBody: drive_v3.Schema$Comment = { content: body };
+  if (trimmedQuote) {
+    requestBody.quotedFileContent = {
+      mimeType: "text/plain",
+      value: truncateQuotedFileContent(trimmedQuote),
+    };
+  }
   const res = await drive.comments.create({
     fileId: docId,
     fields: "id",
-    requestBody: { content: body },
+    requestBody,
   });
   return { commentId: res.data.id ?? "" };
 }
@@ -183,14 +198,60 @@ function findAnchorIn(docText: string, anchor: string): boolean {
   return normalizeWhitespace(docText).includes(normalizeWhitespace(anchor));
 }
 
+/** Drive quoted text length guard (exact limit undocumented; stay conservative). */
+const MAX_QUOTED_FILE_CONTENT_CHARS = 4096;
+
+function truncateQuotedFileContent(value: string): string {
+  if (value.length <= MAX_QUOTED_FILE_CONTENT_CHARS) return value;
+  return value.slice(0, MAX_QUOTED_FILE_CONTENT_CHARS - 1) + "…";
+}
+
 /**
- * Posts each proposed edit as a comment on the Google Doc so the owner can
- * review and apply them manually.
- *
- * Each edit's `anchor` is verified against the current doc text; edits whose
- * anchor cannot be found are skipped. For found anchors the comment body
- * quotes the original text and presents the replacement, and the Drive
- * `quotedFileContent` field is set for clients that honour it.
+ * Returns true if `anchor` appears in `docText` (whitespace-normalized match).
+ */
+export function verifyAnchorInDoc(docText: string, anchor: string): boolean {
+  if (!anchor.trim()) return false;
+  return findAnchorIn(docText, anchor);
+}
+
+function escapeRegexChars(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Returns a contiguous substring of `docText` that matches `anchorHint` (exact
+ * substring, or flexible whitespace between words). Use for `quotedFileContent`
+ * so Drive anchors comments to visible text. Returns null if the hint cannot
+ * be matched to the document.
+ */
+export function resolveQuotedSpan(
+  docText: string,
+  anchorHint: string
+): string | null {
+  const trimmed = anchorHint.trim();
+  if (!trimmed) return null;
+  if (!verifyAnchorInDoc(docText, trimmed)) return null;
+
+  if (docText.includes(trimmed)) return trimmed;
+
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return null;
+
+  const pattern = words.map((w) => escapeRegexChars(w)).join("\\s+");
+  try {
+    const re = new RegExp(pattern);
+    const m = docText.match(re);
+    if (m?.[0]) return m[0];
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Posts each proposed edit as an anchored comment on the Google Doc.
+ * The passage to replace is tied to the doc via Drive `quotedFileContent`
+ * (the anchor); the comment body only carries the proposed replacement text.
  */
 export async function suggestEdits(
   docId: string,
@@ -209,17 +270,15 @@ export async function suggestEdits(
       continue;
     }
 
-    if (!findAnchorIn(docText, edit.anchor)) {
+    const quote = resolveQuotedSpan(docText, edit.anchor);
+    if (!quote) {
       skipped.push({ anchor: edit.anchor, reason: "anchor not found in doc" });
       continue;
     }
 
     const body = [
-      `Original:`,
-      `"${truncate(edit.anchor, 200)}"`,
-      ``,
-      `Suggested:`,
-      truncate(edit.replacement, 1000),
+      `Proposed text:`,
+      truncate(edit.replacement, 1500),
     ].join("\n");
 
     try {
@@ -228,7 +287,10 @@ export async function suggestEdits(
         fields: "id",
         requestBody: {
           content: body,
-          quotedFileContent: { mimeType: "text/plain", value: edit.anchor },
+          quotedFileContent: {
+            mimeType: "text/plain",
+            value: truncateQuotedFileContent(quote),
+          },
         },
       });
       applied++;

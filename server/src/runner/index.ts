@@ -144,12 +144,13 @@ async function executeStep(
   runId: string,
   config: ZeverseConfig,
   state: RunState,
-  sessionPath: string
+  sessionPath: string,
+  workflowName: string
 ): Promise<string> {
   switch (step.kind) {
     case "llm":
     case "review":
-      return executeLLMStep(step, ctx, llm, repo.id, runId);
+      return executeLLMStep(step, ctx, llm, repo.id, runId, workflowName);
     case "shell":
       return executeShellStep(step, ctx, repo.id, sessionPath, runId, config.runner.timeout_ms);
     case "apply":
@@ -310,7 +311,8 @@ async function runStepWithRetryAndLoop(
   config: ZeverseConfig,
   state: RunState,
   stepIndex: number,
-  sessionPath: string
+  sessionPath: string,
+  workflowName: string
 ): Promise<void> {
   const stepState = state.steps[stepIndex];
   const maxRetries = step.retries ?? 0;
@@ -323,7 +325,17 @@ async function runStepWithRetryAndLoop(
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const output = await executeStep(step, ctx, llm, repo, runId, config, state, sessionPath);
+        const output = await executeStep(
+          step,
+          ctx,
+          llm,
+          repo,
+          runId,
+          config,
+          state,
+          sessionPath,
+          workflowName
+        );
 
         stepState.output = output;
         stepState.status = "success";
@@ -568,7 +580,18 @@ async function runWorkflow(
         totalSteps: workflow.steps.length,
       });
 
-      await runStepWithRetryAndLoop(step, ctx, llm, repo, runId, config, state, i, session.path);
+      await runStepWithRetryAndLoop(
+        step,
+        ctx,
+        llm,
+        repo,
+        runId,
+        config,
+        state,
+        i,
+        session.path,
+        workflow.name
+      );
 
       if ((state.status as string) === "failed") return;
     }
@@ -656,7 +679,7 @@ export async function runSingleStep(
   switch (step.kind) {
     case "llm":
     case "review":
-      return executeLLMStep(step, ctx, llm, repo.id, dryRunId);
+      return executeLLMStep(step, ctx, llm, repo.id, dryRunId, workflow.name);
     default:
       throw new Error(
         `runSingleStep only supports llm/review steps, got "${step.kind}"`

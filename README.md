@@ -237,7 +237,7 @@ Templating uses `{{inputs.<id>}}` and `{{steps.<id>.output}}`.
 | GET    | `/api/runs/:id?repoId=`       | Get run state                           |
 | GET    | `/api/logs/:id?repoId=&offset=` | Tail run logs                         |
 | POST   | `/api/gdoc-reply`             | Reply to a Google Doc comment (`{docId, commentId, body}`) |
-| POST   | `/api/gdoc-comment`           | Post a top-level Google Doc comment (`{docId, body}`) |
+| POST   | `/api/gdoc-comment`           | Post a Google Doc comment (`{docId, body}`; optional `anchor` verbatim substring—omit only if you intentionally want an unanchored / document-level comment) |
 | POST   | `/api/gdoc-suggest`           | Apply tracked-change suggestions (`{docId, edits[]}`) |
 | POST   | `/api/infer-repo`             | LLM-inferred repo selection (`{prompt}`) |
 | POST   | `/api/harness/route`          | Unified routing (`{prompt, repoId?, threadContext?, surface}`) — returns `{type: proposal\|answer\|clarify, workflow, inputs, alternatives, confidence}` |
@@ -365,6 +365,10 @@ contract, undefined data shape, conflicting requirement). Example:
 ```
 
 Queries without a `severity` field default to `"nice-to-have"`.
+
+Each `anchor` must be an **exact contiguous substring** copied from the PRD (heading or sentence). Zeverse resolves it against the fetched doc text and passes it to Google Drive as `quotedFileContent` so comments attach to highlighted passages (not document-level threads); deep links use `?disco=` as usual. **Queries whose anchor cannot be matched are skipped**—nothing is posted for that row—so every posted Google Doc comment is anchored.
+
+**Clarification questions only:** Open questions in the `queries` JSON (and Slack-facing bullet questions) should address **product and implementation clarity**—missing requirements, ambiguities, inconsistencies, feasibility vs the codebase—not grammar, spelling, typos, or copy-editing. The Zeverse runner adds extra LLM system instructions for the `prd-analysis` workflow so editorial nitpicks are discouraged; repo prompts should align with the same rule.
 
 ### 2. @mentions (tag the bot in any channel)
 

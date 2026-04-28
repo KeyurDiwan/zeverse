@@ -10,18 +10,34 @@ import type { Repo } from "../repos";
 import { renderTemplate, TemplateContext } from "./template";
 import { appendLog } from "./state";
 
+/**
+ * Base system instructions; optionally extended per workflow name (e.g. prd-analysis).
+ */
+export function buildLLMSystemContent(workflowName?: string): string {
+  const base = "You are an expert software engineer assistant.";
+  if (workflowName === "prd-analysis") {
+    return (
+      base +
+      "\n\nPRD analysis rules: When you output open questions or a fenced ```queries``` JSON block, include ONLY clarification questions needed to resolve ambiguity, missing requirements, inconsistencies, or feasibility gaps compared to the codebase. Do NOT raise feedback about grammar, spelling, typos, wording polish, tone, or stylistic/copy-editing. Do not suggest prose rewrites unless genuine ambiguity blocks understanding of what to build." +
+      "\n\nFor fenced ```suggestions``` / suggestion JSON blocks: include ONLY substantive updates to requirements or spec wording (facts, scope, behavior). Omit entries that only fix spelling, grammar, typos, or cosmetic phrasing."
+    );
+  }
+  return base;
+}
+
 export async function executeLLMStep(
   step: WorkflowStep,
   ctx: TemplateContext,
   llm: LLMProvider,
   repoId: string,
-  runId: string
+  runId: string,
+  workflowName?: string
 ): Promise<string> {
   const prompt = renderTemplate(step.prompt ?? "", ctx);
   appendLog(repoId, runId, `[${step.id}] Sending prompt to LLM (${prompt.length} chars)`);
 
   const response = await llm.chat([
-    { role: "system", content: "You are an expert software engineer assistant." },
+    { role: "system", content: buildLLMSystemContent(workflowName) },
     { role: "user", content: prompt },
   ]);
 

@@ -10,6 +10,7 @@ import {
   listOpenCommentsDetailed,
   replyToComment,
   resolveComment,
+  resolveQuotedSpan,
   suggestEdits,
   CommentResult,
   type SuggestEdit,
@@ -77,24 +78,54 @@ export async function executeGDocFetchStep(
   return `${text}\n\n--- COMMENTS ---\n${commentsJson}\n--- END COMMENTS ---\n`;
 }
 
-interface QueryEntry {
+export type QuerySeverity = "critical" | "nice-to-have";
+
+export interface QueryEntry {
   anchor?: string;
   body: string;
+  severity?: QuerySeverity;
+}
+
+function parseQuerySeverity(raw: unknown): QuerySeverity {
+  return raw === "critical" ? "critical" : "nice-to-have";
+}
+
+/**
+ * Plain-text PRD comment body for Google Docs (no markdown).
+ * Drive shows the quoted passage via quotedFileContent—do not duplicate it here.
+ * Only used when an anchor was resolved (workflow skips rows without anchors on GDoc).
+ */
+export function formatPrdGdocQueryComment(params: {
+  index: number;
+  body: string;
+  severity: QuerySeverity;
+}): string {
+  const title = `[PRD Q${params.index}] [${params.severity}]`;
+  return [
+    title,
+    "",
+    "Question / feedback:",
+    params.body.trim(),
+  ].join("\n");
 }
 
 /**
  * Finds the first fenced JSON block tagged "queries" and parses it.
  */
-function parseQueriesJson(text: string): QueryEntry[] {
+export function parseQueriesJson(text: string): QueryEntry[] {
   const re = /```(?:json)?\s*queries?\s*\n([\s\S]*?)```/i;
   const m = text.match(re);
   if (!m) return [];
   try {
     const parsed = JSON.parse(m[1]);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (e: any) => typeof e === "object" && typeof e.body === "string"
-    );
+    return parsed
+      .filter((e: any) => typeof e === "object" && typeof e.body === "string")
+      .map((e: any) => ({
+        body: e.body as string,
+        anchor: typeof e.anchor === "string" ? e.anchor : undefined,
+        severity: parseQuerySeverity(e.severity),
+      }));
   } catch {
     return [];
   }
@@ -146,14 +177,51 @@ export async function executeGDocCommentStep(
     : await listExistingComments(targetId);
   appendLog(repoId, runId, `[${step.id}] Found ${existing.size} existing open comments`);
 
+  let docText = "";
+  if (!useConfluence) {
+    docText = await fetchDocText(targetId);
+    appendLog(
+      repoId,
+      runId,
+      `[${step.id}] Loaded ${docText.length} chars for anchor verification`
+    );
+  }
+
   const results: CommentResult[] = [];
-  let skipped = 0;
+  let skippedDup = 0;
+  let skippedAnchor = 0;
   for (let i = 0; i < queries.length; i++) {
     const q = queries[i];
     const trimmedBody = q.body.trim();
+    const severity = q.severity ?? "nice-to-have";
+    const anchorRaw = q.anchor?.trim() ?? "";
 
-    if (existing.has(trimmedBody)) {
-      skipped++;
+    const quotedSpan =
+      !useConfluence && anchorRaw ? resolveQuotedSpan(docText, anchorRaw) : null;
+
+    if (!useConfluence && quotedSpan === null) {
+      skippedAnchor++;
+      appendLog(
+        repoId,
+        runId,
+        `[${step.id}] Comment ${i + 1}/${queries.length} SKIPPED (not anchored — add verbatim \`anchor\` from PRD in queries JSON)`
+      );
+      results.push({ index: i, body: q.body, status: "ok", commentId: "anchor-skipped" });
+      continue;
+    }
+
+    const fullComment = useConfluence
+      ? trimmedBody
+      : formatPrdGdocQueryComment({
+          index: i + 1,
+          body: trimmedBody,
+          severity,
+        });
+
+    const dedupKey = fullComment.trim();
+
+    if (existing.has(dedupKey)) {
+      skippedDup++;
       appendLog(
         repoId,
         runId,
@@ -166,8 +234,10 @@ export async function executeGDocCommentStep(
     try {
       const { commentId } = useConfluence
         ? await confluenceAddComment(targetId, trimmedBody)
-        : await addComment(targetId, trimmedBody);
-      existing.add(trimmedBody);
+        : await addComment(targetId, fullComment, {
+            quotedAnchor: quotedSpan ?? undefined,
+          });
+      existing.add(dedupKey);
       appendLog(
         repoId,
         runId,
@@ -184,17 +254,25 @@ export async function executeGDocCommentStep(
     }
   }
 
-  const posted = results.filter((r) => r.status === "ok" && r.commentId !== "dup-skipped").length;
-  const lines = results.map(
-    (r) => {
-      if (r.commentId === "dup-skipped") return `SKIP [${r.index + 1}] ${r.body.slice(0, 80)} (already exists)`;
-      if (r.status === "ok") return `+ [${r.index + 1}] ${r.body.slice(0, 80)} (id=${r.commentId})`;
-      return `FAIL [${r.index + 1}] ${r.body.slice(0, 80)} — ${r.error}`;
+  const posted = results.filter(
+    (r) =>
+      r.status === "ok" &&
+      r.commentId !== "dup-skipped" &&
+      r.commentId !== "anchor-skipped"
+  ).length;
+  const lines = results.map((r) => {
+    if (r.commentId === "dup-skipped") {
+      return `SKIP [${r.index + 1}] ${r.body.slice(0, 80)} (already exists)`;
     }
-  );
+    if (r.commentId === "anchor-skipped") {
+      return `SKIP [${r.index + 1}] ${r.body.slice(0, 80)} (not anchored)`;
+    }
+    if (r.status === "ok") return `+ [${r.index + 1}] ${r.body.slice(0, 80)} (id=${r.commentId})`;
+    return `FAIL [${r.index + 1}] ${r.body.slice(0, 80)} — ${r.error}`;
+  });
 
   return [
-    `Posted ${posted}/${queries.length} comments on doc ${targetId} (${skipped} skipped as duplicates):`,
+    `Posted ${posted}/${queries.length} comments on doc ${targetId} (${skippedDup} skipped as duplicates, ${skippedAnchor} skipped — no resolvable anchor):`,
     ...lines,
   ].join("\n") + "\n";
 }

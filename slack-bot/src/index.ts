@@ -14,6 +14,11 @@ import fs from "fs";
 }
 
 import { App, LogLevel } from "@slack/bolt";
+import {
+  bulletsToNumberedLines,
+  normalizeSlackMrkdwn,
+  wrapWorkflowSummary,
+} from "./format-slack-message";
 
 const ARCHON_SERVER_URL = process.env.ARCHON_SERVER_URL ?? "http://localhost:3100";
 const ARCHON_UI_URL = process.env.ARCHON_UI_URL ?? "http://localhost:5173";
@@ -739,10 +744,10 @@ async function formatRunFailureForSlack(
 
   const lines: string[] = [`*${title}*`];
   if (state.gateFailures && state.gateFailures.length > 0) {
-    lines.push("*Gate check:*");
-    for (const g of state.gateFailures) {
-      lines.push(`• \`${g.stepId}\`: ${g.error}`);
-    }
+    lines.push("*Gate check:*", "");
+    state.gateFailures.forEach((g, i) => {
+      lines.push(`${i + 1}. \`${g.stepId}\`: ${g.error}`);
+    });
   } else {
     lines.push(
       "_No step-level error on record._ Common causes: **LLM init** (check `config/archon.yaml` and env), **git isolation** (uncommitted changes on the server’s repo copy), or **branch creation** failed. *Log tail* or the Zeverse run view has the line that explains it."
@@ -781,6 +786,14 @@ function extractFrAnalysisSummaryForSlack(text: string): string | null {
 
 const SLACK_MAX_TEXT = 3900;
 
+/** Friendlier thread headers when a run finishes (fallback: “Workflow complete”). */
+const WORKFLOW_SLACK_LABELS: Record<string, string> = {
+  "fr-analyze": "Done — Freshrelease analysis",
+  "prd-analysis": "Done — PRD analysis",
+  dev: "Done — dev workflow",
+  "pr-review": "Done — PR review",
+};
+
 function trimOutput(text: string): string {
   if (text.length <= SLACK_MAX_TEXT) return text;
   return text.slice(0, SLACK_MAX_TEXT) + "\n…_(truncated — see full output in Zeverse)_";
@@ -818,52 +831,63 @@ async function pollRunAndPostResult(
       return;
     }
 
-    const parts: string[] = [`*Workflow complete*`, ""];
+    const wfName = state.workflow ?? "";
+    const doneTitle = WORKFLOW_SLACK_LABELS[wfName] ?? "Workflow complete";
+    const sectionParts: string[] = [];
 
     const diffStep = state.steps.find((s) => s.id === "diff-after");
     if (diffStep?.output) {
       const diffLines = diffStep.output.split("\n");
       const statLine = diffLines.find((l) => l.includes("files changed") || l.includes("file changed"));
-      if (statLine) parts.push(`\`${statLine.trim()}\``);
+      if (statLine) sectionParts.push(`\`${statLine.trim()}\``);
       const diffPreview = diffLines
         .filter((l) => l.startsWith("+") || l.startsWith("-"))
         .slice(0, 20)
         .join("\n");
-      if (diffPreview) parts.push("```" + diffPreview + "```");
+      if (diffPreview) sectionParts.push("```" + diffPreview + "```");
     }
 
     const prStep = state.steps.find((s) => s.id === "open-pr");
     if (prStep?.output) {
       const prUrlMatch = prStep.output.match(/PR_URL=(https?:\/\/\S+)/);
-      if (prUrlMatch) parts.push(`<${prUrlMatch[1]}|View PR on GitHub>`);
+      if (prUrlMatch) sectionParts.push(`<${prUrlMatch[1]}|View PR on GitHub>`);
     }
 
     const reviewStep = state.steps.find((s) => s.id === "review");
     if (reviewStep?.output) {
       const verdictMatch = reviewStep.output.match(/(?:verdict|recommendation)[:\s]*(.*)/i);
-      if (verdictMatch) parts.push(`*Review verdict:* ${verdictMatch[1].trim().slice(0, 200)}`);
+      if (verdictMatch) sectionParts.push(`*Review verdict:* ${verdictMatch[1].trim().slice(0, 200)}`);
     }
 
     const hasDiffPrReview =
       !!(diffStep?.output || prStep?.output || reviewStep?.output);
     if (!hasDiffPrReview) {
-      if (state.workflow === "fr-analyze") {
+      if (wfName === "fr-analyze") {
         const analyse = state.steps.find((s) => s.id === "analyse");
-        parts.push(trimOutput(analyse?.output ?? ""));
+        const raw = analyse?.output ?? "";
+        const summary = extractFrAnalysisSummaryForSlack(raw);
+        const formatted = normalizeSlackMrkdwn(bulletsToNumberedLines(summary ?? raw));
+        sectionParts.push(formatted);
       } else {
         const lastStep = state.steps[state.steps.length - 1];
         const lastOutput = lastStep?.output ?? "";
-        parts.push(trimOutput(lastOutput));
+        sectionParts.push(normalizeSlackMrkdwn(bulletsToNumberedLines(lastOutput)));
       }
     }
 
-    parts.push("");
-    parts.push(`<${ARCHON_UI_URL}/?run=${runId}|View full output in Zeverse>`);
+    const bodyCore = sectionParts.filter(Boolean).join("\n\n");
+    const bodyTrimmed = trimOutput(bodyCore);
+    const footer = `<${ARCHON_UI_URL}/?run=${runId}|View full output in Zeverse>`;
+    const text = wrapWorkflowSummary({
+      title: doneTitle,
+      body: bodyTrimmed,
+      footer,
+    });
 
     await client.chat.postMessage({
       channel,
       thread_ts,
-      text: parts.filter(Boolean).join("\n"),
+      text,
     });
     return;
   }
@@ -1290,16 +1314,23 @@ async function pollRunAndReply(
       ? `*Open questions:* ${openTotal}${criticalCount > 0 ? ` (${criticalCount} critical)` : ""}`
       : "";
 
+    const slackReplyFmt = slackReply
+      ? normalizeSlackMrkdwn(bulletsToNumberedLines(slackReply))
+      : "_No verdict produced — check the full run._";
+    const epicFmt = epicBreakdown
+      ? normalizeSlackMrkdwn(bulletsToNumberedLines(epicBreakdown))
+      : "";
+
     const body = [
-      `*PRD Analysis Complete* — \`${repoId}\``,
+      `*PRD analysis complete* — here’s the summary for \`${repoId}\`.`,
       "",
-      slackReply ?? "_No verdict produced — check the full run._",
+      slackReplyFmt,
       "",
       commentLine,
       questionCountLine,
       `<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View full analysis in Zeverse>`,
       "",
-      epicBreakdown ? `*Epic & Tasks*\n${epicBreakdown}` : "",
+      epicFmt ? `*Epic & tasks*\n${epicFmt}` : "",
     ]
       .filter(Boolean)
       .join("\n");
@@ -1575,13 +1606,20 @@ function extractEditsJson(text: string): { anchor: string; replacement: string; 
 
 async function postGDocComment(
   docId: string,
-  body: string
+  body: string,
+  anchor?: string
 ): Promise<{ commentId?: string; error?: string }> {
   try {
+    const payload: { docId: string; body: string; anchor?: string } = {
+      docId,
+      body,
+    };
+    const trimmed = anchor?.trim();
+    if (trimmed) payload.anchor = trimmed;
     const res = await fetch(`${ARCHON_SERVER_URL}/api/gdoc-comment`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ docId, body }),
+      body: JSON.stringify(payload),
     });
     return await zeverseResponseJson<{ commentId?: string; error?: string }>(
       res,
@@ -1755,11 +1793,19 @@ async function pollThreadSync(
       }
     }
 
-    const parts: string[] = [`*PRD ${intent === "update" ? "update" : "answer sync"} complete*`, ""];
-    if (repliesPosted > 0) parts.push(`Replies posted on Google Doc comments: ${repliesPosted}`);
-    if (repliesFailed > 0) parts.push(`Reply failures: ${repliesFailed}`);
+    const verb = intent === "update" ? "update" : "answer";
+    const parts: string[] = [
+      `*PRD ${verb} sync finished* — I’ve pushed your thread back to the doc on \`${ctx.repoId}\`.`,
+      "",
+    ];
+    let syncLine = 0;
+    if (repliesPosted > 0) parts.push(`${++syncLine}. Replies posted on Google Doc comments: ${repliesPosted}`);
+    if (repliesFailed > 0) parts.push(`${++syncLine}. Reply failures: ${repliesFailed}`);
     if (intent === "update" && edits.length > 0) {
-      parts.push(`Suggestions created: ${editsApplied}, skipped: ${editsSkipped}`);
+      parts.push(`${++syncLine}. Suggestions created: ${editsApplied}, skipped: ${editsSkipped}`);
+    }
+    if (repliesPosted === 0 && repliesFailed === 0 && !(intent === "update" && edits.length > 0)) {
+      parts.push("_No comment replies were posted (see the Zeverse run for details)._");
     }
     parts.push("");
     parts.push(`<${ctx.docUrl}|Open PRD in Google Docs>`);
@@ -1966,10 +2012,10 @@ function proposalBlocks(proposalId: string, p: StoredProposal) {
         text: {
           type: "mrkdwn",
           text: [
-            `*PRD analysis* on \`${p.repoId}\``,
+            `I can run *PRD analysis* on \`${p.repoId}\`.`,
             docLink,
-            `_Click Run to start the analysis. I'll reply in this thread when done._`,
-          ].filter(Boolean).join("\n"),
+            `_Tap *Run* when you’re ready — I’ll summarize back in this thread._`,
+          ].filter(Boolean).join("\n\n"),
         },
       },
       {
@@ -1993,22 +2039,26 @@ function proposalBlocks(proposalId: string, p: StoredProposal) {
     ];
   }
 
-  const altText = p.alternatives.length > 0
-    ? `\nAlternatives: ${p.alternatives.map((a) => `\`${a}\``).join(", ")}`
-    : "";
+  const promptPreview = p.prompt.length > 200 ? p.prompt.slice(0, 200) + "…" : p.prompt;
+  const altLines =
+    p.alternatives.length > 0
+      ? `\n\n*Other workflows you could pick:*\n${p.alternatives
+          .map((a, i) => `${i + 1}. \`${a}\``)
+          .join("\n")}`
+      : "";
+  const sectionBody = [
+    `I’m suggesting *\`${p.workflow}\`* on *\`${p.repoId}\`* (${(p.confidence * 100).toFixed(0)}% confidence).`,
+    "",
+    `1. *Why this fit:* ${p.reason}`,
+    `2. *Your ask:* ${promptPreview}`,
+    `${altLines}\n\n_Use *Run* below to start, or pick another workflow from the menu._`,
+  ].join("\n");
   return [
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: [
-          `*Harness routed your request*`,
-          `Workflow: \`${p.workflow}\``,
-          `Repo: \`${p.repoId}\` | Confidence: ${(p.confidence * 100).toFixed(0)}%`,
-          `Reason: ${p.reason}`,
-          `Prompt: ${p.prompt.length > 200 ? p.prompt.slice(0, 200) + "…" : p.prompt}`,
-          altText,
-        ].filter(Boolean).join("\n"),
+        text: sectionBody,
       },
     },
     {
@@ -2338,20 +2388,22 @@ async function handleHarnessMessage(
   }
 
   if (route.type === "answer") {
-    await client.chat.postMessage({
-      channel,
-      thread_ts,
-      text: route.answer ?? "I don't have an answer for that right now.",
+    const raw = route.answer ?? "I don't have an answer for that right now.";
+    const text = wrapWorkflowSummary({
+      title: "Here’s what I found",
+      body: normalizeSlackMrkdwn(bulletsToNumberedLines(raw)),
     });
+    await client.chat.postMessage({ channel, thread_ts, text });
     return;
   }
 
   if (route.type === "clarify") {
-    await client.chat.postMessage({
-      channel,
-      thread_ts,
-      text: route.question ?? "Could you provide more details?",
+    const raw = route.question ?? "Could you provide more details?";
+    const text = wrapWorkflowSummary({
+      title: "Quick question",
+      body: normalizeSlackMrkdwn(bulletsToNumberedLines(raw)),
     });
+    await client.chat.postMessage({ channel, thread_ts, text });
     return;
   }
 
@@ -2386,7 +2438,7 @@ async function handleHarnessMessage(
     channel,
     thread_ts,
     blocks: proposalBlocks(proposalId, proposalStore.get(proposalId)!),
-    text: `Harness proposes running \`${workflow}\` on \`${repoId}\`. Click Run to proceed.`,
+    text: `I’m proposing *\`${workflow}\`* on *\`${repoId}\`*. Tap *Run* in the thread to start.`,
   });
 }
 
@@ -2768,9 +2820,11 @@ async function pollPrdRaiseAndReply(
     const branchMatch = output.match(/BRANCH=(\S+)/);
     const prUrlMatch = output.match(/PR_URL=(https?:\/\/\S+)/);
 
-    const parts: string[] = [`*PRD PR raised* — \`${repoId}\``];
-    if (branchMatch) parts.push(`Branch: \`${branchMatch[1]}\``);
-    if (prUrlMatch) parts.push(`PR: <${prUrlMatch[1]}|View PR on GitHub>`);
+    const parts: string[] = [`*PRD PR raised* — here’s the link for \`${repoId}\`.`, ""];
+    let raised = 0;
+    if (branchMatch) parts.push(`${++raised}. Branch: \`${branchMatch[1]}\``);
+    if (prUrlMatch) parts.push(`${++raised}. PR: <${prUrlMatch[1]}|View on GitHub>`);
+    parts.push("");
     parts.push(
       `<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View raise-PR run in Zeverse>`
     );
@@ -3119,24 +3173,24 @@ async function pollFrCardAndReply(
     const parts: string[] = [];
 
     if (successes.length > 0 || failures.length > 0) {
-      parts.push(`*FR Cards Created* — \`${repoId}\` — created ${successes.length}/${total} in \`${workspace}\``);
+      parts.push(`*Freshrelease cards created* — \`${repoId}\` — ${successes.length}/${total} in \`${workspace}\``);
       parts.push("");
-      for (const s of successes) {
-        parts.push(`• <${s.url}|${s.key}> — ${s.kind}: ${s.title}`);
-      }
+      successes.forEach((s, i) => {
+        parts.push(`${i + 1}. <${s.url}|${s.key}> — ${s.kind}: ${s.title}`);
+      });
       if (failures.length > 0) {
         parts.push("");
         parts.push("*Failed:*");
-        for (const f of failures) {
-          parts.push(`• ${f.kind} "${f.title}": ${f.reason}`);
-        }
+        failures.forEach((f, i) => {
+          parts.push(`${i + 1}. ${f.kind} "${f.title}": ${f.reason}`);
+        });
       }
     } else {
       const summaryStep = state.steps.find((s) => s.id === "summary");
       const output = summaryStep?.output || createOutput || "Cards created (no summary available).";
-      parts.push(`*FR Cards Created* — \`${repoId}\``);
+      parts.push(`*Freshrelease cards created* — \`${repoId}\``);
       parts.push("");
-      parts.push(trimOutput(output));
+      parts.push(trimOutput(normalizeSlackMrkdwn(bulletsToNumberedLines(output))));
     }
 
     parts.push("");
@@ -3686,7 +3740,8 @@ app.message(async ({ message, client, logger }) => {
   } else {
     const result = await postGDocComment(
       ctx.docId,
-      `[Answer to Q${query.index}]: ${match.suggestion}`
+      `[Answer to Q${query.index}]: ${match.suggestion}`,
+      query.anchor
     );
     if (result.error) {
       logger.error(`Failed to post GDoc comment for Q${match.queryIndex}: ${result.error}`);

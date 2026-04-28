@@ -195,15 +195,21 @@ runRoutes.post("/gdoc-reply", async (req: Request, res: Response) => {
   }
 });
 
+// Without `anchor`, Drive creates an unanchored (document-level) comment.
+// Pass a verbatim substring from the doc body for highlighted threads (`?disco=` links).
 runRoutes.post("/gdoc-comment", async (req: Request, res: Response) => {
   try {
-    const { docId: rawDocId, body } = req.body ?? {};
+    const { docId: rawDocId, body, anchor } = req.body ?? {};
     if (!rawDocId || !body) {
       res.status(400).json({ error: "docId and body are required" });
       return;
     }
     const docId = extractDocId(rawDocId);
-    const result = await addComment(docId, body);
+    const anchorStr =
+      typeof anchor === "string" && anchor.trim() ? anchor.trim() : undefined;
+    const result = await addComment(docId, body, {
+      quotedAnchor: anchorStr,
+    });
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
