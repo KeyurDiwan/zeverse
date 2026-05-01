@@ -22,6 +22,11 @@ npm-debug.log*
 # Google service account credentials
 config/gcp-service-account.json
 
+# Keys / certs (never commit)
+*.pem
+*.key
+*.p12
+
 # Zeverse runtime
 state/*
 !state/.gitkeep

@@ -1,6 +1,19 @@
 # Zeverse
 
-Multi-repo AI workflow runner. One control plane (server + UI + Slack bot) that can drive dev, CI/CD, and custom workflows across any number of target repositories.
+Multi-repo AI workflow runner — one control plane (server + UI + optional Slack bot) that can drive dev, CI/CD, and custom workflows across any number of target repositories.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+![Node.js 20+](https://img.shields.io/badge/node-%E2%89%A520-green)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+### Why Zeverse?
+
+- **Multi-repo** — import many Git remotes; each run clones on demand (or uses an optional persistent workspace).
+- **Workflow-as-code** — define steps under each target repo’s `.zeverse/workflows/`.
+- **Multi-surface** — same REST API powers the dashboard, Slack, and scripting.
+- **[Onboarding](#onboarding-a-new-repository)** — register repos, workflows, rules/skills context, integrations.
+- **Policy + audit** — optional allowlists for repos/workflows/channels; audited harness executions in `state/audit.log`.
+- **LLM** — documented default uses **CloudVerse** (`CLOUDVERSE_*`). The runner uses an OpenAI-SDK-compatible client; any compatible `base_url` + API key pairing may work if it matches that API shape.
 
 ```
 zeverse/
@@ -15,6 +28,31 @@ zeverse/
 
 Workflows and commands live **inside each target repo** under `.zeverse/workflows/` and `.zeverse/commands/`. Zeverse itself is project-agnostic.
 
+### Architecture
+
+```mermaid
+flowchart LR
+  UI[Vite_dashboard]
+  Slack[Slack_Bolt_bot]
+  API[Express_API]
+  Runner[Workflow_runner]
+  Clone[Ephemeral_workspace]
+  Remote[Git_remote_PR]
+  UI -->|"HTTP"| API
+  Slack -->|"HTTP"| API
+  API --> Runner
+  Runner --> Clone
+  Runner --> Remote
+```
+
+## Configuration reference
+
+| Source | Purpose |
+|--------|---------|
+| [`.env.example`](.env.example) | Copy to `.env`; ports, `CLOUDVERSE_*`, `GITHUB_TOKEN`, Slack, integrations. **Never commit `.env`.** |
+| [`config/zeverse.yaml`](config/zeverse.yaml) | Model, timeouts, paths, optional `policy` — substitutes `${CLOUDVERSE_BASE_URL}`, `${CLOUDVERSE_API_KEY}`, etc. |
+| [`repos.json`](repos.json) | Imported repos (`id`, `origin`, `defaultBranch`). **Usually updated automatically** via the UI (**+ Import**), Slack/API `add-repo`, etc. The version in Git is only a starter example. See **[Onboarding a new repository](#onboarding-a-new-repository)** for rules and workflows per target repo. |
+
 ## Prerequisites
 
 - Node.js ≥ 20
@@ -25,21 +63,52 @@ Workflows and commands live **inside each target repo** under `.zeverse/workflow
 
 ## Quick start
 
-```bash
-cp .env.example .env
-# Edit .env with your CloudVerse API key. Hub settings use the ZEVERSE_* variables (see `.env.example`).
+1. Clone this repository.
+2. Install dependencies:
 
-npm run install:all
+   ```bash
+   npm run install:all
+   ```
 
-# In separate terminals:
-npm run dev:server       # http://localhost:3100
-npm run dev:ui           # http://localhost:5173
-npm run dev:slack        # optional, only if Slack creds are set
-```
+3. Configure environment:
 
-Open http://localhost:5173 and click **+ Import** to register your first repo.
+   ```bash
+   cp .env.example .env
+   ```
 
-The checkout directory and npm root package name are **`zeverse`**. Rename the repo on GitHub under **Settings → General → Repository name** if needed, point `origin` at the new URL, and use a local folder name that matches (rename your clone if needed).
+   Edit `.env`: set **`CLOUDVERSE_API_KEY`** and **`CLOUDVERSE_BASE_URL`** (see comments in [.env.example](.env.example)). For workflows that push or open PRs on private GitHub repos, set **`GITHUB_TOKEN`**. Optionally fill Slack vars to run **`slack-bot/`**.
+
+4. Start services (each in its own terminal):
+
+   ```bash
+   npm run dev:server   # API — http://localhost:3100
+   npm run dev:ui       # Dashboard — http://localhost:5173
+   npm run dev:slack    # optional — Bolt app when Slack vars are set
+   ```
+
+5. Open http://localhost:5173 and use **+ Import** to register a target repo (or edit [`repos.json`](repos.json) if you prefer a file-first flow).
+
+Smoke-check the API matches what the Slack bot expects: `npm run check:zeverse` (requires the server running).
+
+The npm/workspace root package name is **`zeverse`**; cloning into a folder with that name matches the README paths.
+
+## Onboarding a new repository
+
+Steps for each **target repo** Zeverse will run against:
+
+1. **Register in the hub** — Use **+ Import** in the dashboard, Slack/API `add-repo`, or append an entry to [`repos.json`](repos.json). You only need `git` remote URL plus the branch Zeverse should clone by default (`defaultBranch`).
+
+2. **Define workflows** — In that repo add `.zeverse/workflows/*.yaml`. For Slack’s unified router, optionally add `.zeverse/workflows/harness.yaml`; otherwise server-side harness routing applies. See **[Adding workflows to a target repo](#adding-workflows-to-a-target-repo)**.
+
+3. **Rules / skills (LLM context in every run)** — Zeverse does **not** read global Cursor Composer **Skills** (`~/.cursor/skills`). It concatenates repo-local Markdown in this **order**:
+
+   - `.zeverse/rules/*.md`
+   - `.cursorrules` (single file at the repo root)
+   - `.cursor/rules/*.md`
+
+   **Recommended:** bootstrap `.zeverse/rules/` via **+ Rules**, Slack **Add rules & skills**, or `POST /api/repos/<repo-id>/bootstrap-rules` (see **[Bootstrapping rules & skills](#bootstrapping-rules-skills)**) so the runner gets tech-stack, conventions, testing, domain, etc. **Optional:** keep `.cursorrules` / `.cursor/rules/` aligned with Cursor; Zeverse loads them automatically. If you rely on Composer skills elsewhere, copy the relevant guidance into `.zeverse/rules/` manually.
+
+4. **Integrations (only when needed)** — Freshrelease-backed `fr-*` workflows need **`FRESHRELEASE_API_TOKEN`** in `.env` (see **[Freshrelease integration](#freshrelease-integration)**). Workspace follows **Freshrelease / Agile** URLs (`/ws/<workspace>/tasks/…` — analogous to a **Jira project** segment). Google Docs PRD flows need a service account JSON and sharing the doc (see **[Google Docs integration](#google-docs-integration-for-zeverse-prd)**).
 
 ## Importing repos
 
@@ -53,11 +122,11 @@ The registry is stored in `repos.json`:
 {
   "repos": [
     {
-      "id": "ubx-ui",
-      "name": "ubx-ui",
-      "origin": "https://github.com/freshdesk/ubx-ui",
-      "defaultBranch": "AI-agents-rules-skills",
-      "addedAt": "2026-04-22T00:00:00Z"
+      "id": "zeverse",
+      "name": "zeverse",
+      "origin": "https://github.com/KeyurDiwan/zeverse.git",
+      "defaultBranch": "main",
+      "addedAt": "2026-05-02T00:00:00.000Z"
     }
   ]
 }
@@ -94,15 +163,15 @@ You can target a specific branch for a run:
 - **API:** `POST /api/run-workflow` with `{ baseBranch: "my-branch" }`
 - **UI:** Fill in the "Branch" input above the Run button
 - **Slack:** Append `branch=my-branch` to your message, e.g.
-  `@ZeverseBot fix the login bug branch=AI-agents-rules-skills`
+  `@ZeverseBot fix the login bug branch=main`
 
 Defaults to the repo's `defaultBranch` when omitted.
 
 ### Bootstrapping rules & skills
 
-After importing a repo you can auto-generate `.zeverse/rules/*.md` files — these
+After onboarding a repo (see **[Onboarding a new repository](#onboarding-a-new-repository)**), you can auto-generate `.zeverse/rules/*.md` files — these
 give the LLM context about the repo's tech stack, conventions, testing patterns,
-and domain for every future workflow run.
+and domain for every future workflow run. The bootstrap fingerprints existing `.cursorrules` and `.cursor/rules/` where present so drafts do not duplicate them.
 
 **UI:** Click the **+ Rules** button next to any repo in the sidebar. A
 `bootstrap-rules` run starts immediately; progress streams in the log pane.
@@ -489,8 +558,9 @@ Both checks must pass for the operation to proceed.
 
 ### Freshrelease integration
 
-Workflows `fr-card-creator`, `fr-analyze`, and `fr-task-finisher` talk to the
-Freshrelease API to fetch tasks, create cards, and post comments.
+**Freshrelease** (Freshworks’ Agile / work-item backend) exposes a REST API for tasks and comments — similar role to picking a **Jira project**: URLs look like `/ws/<WORKSPACE>/tasks/...`.
+
+Workflows `fr-card-creator`, `fr-analyze`, and `fr-task-finisher` call that API to fetch tasks, create cards, and post comments.
 
 The `fr-analyze` workflow in **ubx-ui** follows the same “FR Analyzer” behaviour as the Cursor agent (analysis-only, full comment context, structured sections); the hub uses **`fr-fetch`** and the LLM instead of calling Freshrelease MCP tools at runtime.
 
@@ -514,11 +584,12 @@ The `edit` executor (`executeEditStep`) now tracks a `dirtyFiles` set and only
 flushes files that had at least one successful op -- failed SEARCH blocks against
 non-existent paths no longer create empty stub files on disk.
 
-1. Set `FRESHRELEASE_API_TOKEN` in `.env` to your Freshrelease personal API token.
-2. Optionally set `FRESHRELEASE_WORKSPACE` (default: `BILLING`).
+1. Set **`FRESHRELEASE_API_TOKEN`** in `.env` to your Freshrelease **personal API token** (Freshworks Agile / Freshrelease credential). This is required for **`fr-fetch`**, **`fr-comment`**, and related steps.
+2. **Workspace (“project”)** — Freshrelease behaves like Agile work-item URLs: **`/ws/<WORKSPACE>/tasks/<KEY>`**, where **`WORKSPACE`** is the product/board segment (conceptually similar to choosing a **Jira project / board** before opening a ticket). Paste **full Freshrelease URLs** in prompts / `frUrl` where workflows support them so Zeverse can resolve **`WORKSPACE`**. Bare keys (`BILLING-123`) infer workspace from the alphabetic prefix; some workflow YAML may also set **`workspace`** on **`fr-fetch`** steps. Stock steps may internally default **`BILLING`** when unspecified — tune your `.zeverse/workflows` if your Agile module uses another key.
 
-The same token that powers the Cursor MCP at `~/.claude/mcp-servers/freshrelease/`
-works here.
+**Optional:** **`FRESHRELEASE_WORKSPACE`** in [.env.example](.env.example) documents the same key for MCP / local scripting parity alongside Zeverse; copy into `.env` if your tooling consumes it.
+
+The same Freshrelease token you use elsewhere (for example Cursor MCP wired to `{workspaceFolder}/.env`) satisfies Zeverse.
 
 ### Available workflows
 
@@ -538,6 +609,18 @@ works here.
 | `ask` | General question | Read-only codebase Q&A |
 | `explain-codebase` | "explain" / "how does" | Walk through code structure |
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Security
+
+See [SECURITY.md](SECURITY.md). Do not commit `.env`, API tokens, or `config/gcp-service-account.json`.
+
+## Code of conduct
+
+This community follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
+
 ## License
 
-Private — Freshworks Inc.
+Licensed under the [MIT License](LICENSE).

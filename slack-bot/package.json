@@ -2,6 +2,12 @@
   "name": "zeverse-slack-bot",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
+  "author": "Keyur Diwan",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KeyurDiwan/zeverse.git"
+  },
   "description": "Slack bot for triggering Zeverse workflows across multiple repos",
   "scripts": {
     "dev": "ts-node --transpile-only src/index.ts",

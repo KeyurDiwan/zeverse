@@ -2,6 +2,12 @@
   "name": "zeverse-ui",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
+  "author": "Keyur Diwan",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KeyurDiwan/zeverse.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

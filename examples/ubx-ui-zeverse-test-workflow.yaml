@@ -1,6 +1,11 @@
-# Sync this file to freshdesk/ubx-ui as `.zeverse/workflows/test.yaml` (on the branch
-# Zeverse uses as defaultBranch in repos.json). Zeverse clones have no node_modules;
-# you must install before Jest. After pushing, refresh the hub cache (see bottom).
+# Example workflow written for one specific product repo (heavy Jest setup). To use it elsewhere:
+# - Copy under YOUR repo as `.zeverse/workflows/<name>.yaml`; adjust shell commands (npm/yarn/pnpm),
+#   install flags, and test runners to match your project.
+# - Set that repo's `defaultBranch` in hub `repos.json` (or the UI Import) before running against it.
+#
+# Originally: sync into a target repo as `.zeverse/workflows/test.yaml` on the branch Zeverse uses
+# as `defaultBranch` for that repo. Zeverse clones have no `node_modules` — install in a shell step first.
+# After pushing upstream, refresh the hub workflow cache if needed (see bottom).
 name: test
 description: Run Jest (optionally scoped) and summarise failures with suggested fixes.
 inputs:

@@ -1,8 +1,30 @@
 {
   "name": "zeverse",
   "version": "1.0.0",
-  "private": true,
   "description": "Zeverse — multi-repo AI workflow runner (server + UI + Slack bot).",
+  "license": "MIT",
+  "author": "Keyur Diwan",
+  "homepage": "https://github.com/KeyurDiwan/zeverse#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KeyurDiwan/zeverse.git"
+  },
+  "bugs": {
+    "url": "https://github.com/KeyurDiwan/zeverse/issues"
+  },
+  "keywords": [
+    "ai",
+    "workflow",
+    "llm",
+    "slack-bot",
+    "devtools",
+    "cursor",
+    "code-review",
+    "automation"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "workspaces": [
     "server",
     "ui",

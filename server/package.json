@@ -2,6 +2,12 @@
   "name": "zeverse-server",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
+  "author": "Keyur Diwan",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KeyurDiwan/zeverse.git"
+  },
   "description": "Zeverse API server — multi-repo AI workflow runner",
   "scripts": {
     "dev": "ts-node --transpile-only src/index.ts",

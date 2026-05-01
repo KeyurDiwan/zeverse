@@ -1,39 +1,11 @@
 {
   "repos": [
     {
-      "id": "ubx-ui",
-      "name": "ubx-ui",
-      "origin": "https://github.com/freshdesk/ubx-ui",
-      "defaultBranch": "AI-agents-rules-skills",
-      "addedAt": "2026-04-22T10:18:02.430Z"
-    },
-    {
-      "id": "freshid-ui-v2",
-      "name": "freshid-ui-v2",
-      "origin": "https://github.com/freshdesk/freshid-ui-v2",
-      "defaultBranch": "master",
-      "addedAt": "2026-04-22T10:47:44.514Z"
-    },
-    {
-      "id": "freshworks-omnibar-v2",
-      "name": "freshworks-omnibar-v2",
-      "origin": "https://github.com/freshdesk/freshworks-omnibar-v2",
-      "defaultBranch": "master",
-      "addedAt": "2026-04-28T09:10:07.423Z"
-    },
-    {
-      "id": "ufx-web-components",
-      "name": "ufx-web-components",
-      "origin": "https://github.com/fwneo/ufx-web-components",
-      "defaultBranch": "master",
-      "addedAt": "2026-04-28T10:06:20.739Z"
-    },
-    {
-      "id": "freshid-email-templates",
-      "name": "freshid-email-templates",
-      "origin": "https://github.com/freshdesk/freshid-email-templates",
-      "defaultBranch": "master",
-      "addedAt": "2026-04-28T10:18:54.842Z"
+      "id": "zeverse",
+      "name": "zeverse",
+      "origin": "https://github.com/KeyurDiwan/zeverse.git",
+      "defaultBranch": "main",
+      "addedAt": "2026-05-02T00:00:00.000Z"
     }
   ]
 }
