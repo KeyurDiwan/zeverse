@@ -60,6 +60,14 @@ function runGitAsync(
   });
 }
 
+/**
+ * True when `origin` is a public GitHub HTTPS URL (not already embedding credentials).
+ * SSH remotes use the SSH agent / default key — not `GITHUB_TOKEN`.
+ */
+function isGithubHttpsOrigin(origin: string): boolean {
+  return /^https:\/\/([^/@]+\.)?github\.com\//i.test(origin.trim());
+}
+
 function buildSession(
   sessionPath: string,
   baseBranch: string,
@@ -88,11 +96,29 @@ function buildSession(
     },
 
     async pushRunBranch(): Promise<void> {
-      const res = await runGitAsync(
-        ["push", "--set-upstream", "origin", runBranch],
-        sessionPath,
-        300_000
-      );
+      const token = process.env.GITHUB_TOKEN?.trim();
+      const ghInfo = parseGitHubOrigin(repo.origin);
+
+      // `git push` does not read `GITHUB_TOKEN` by default — it uses the OS credential
+      // helper (often another GitHub user). Use the PAT for GitHub HTTPS when set.
+      // --no-verify: repo hooks often log under a fixed $HOME path from the author's
+      // machine and fail when Zeverse runs as another user or in automation.
+      let res;
+      if (token && ghInfo && isGithubHttpsOrigin(repo.origin)) {
+        const pushUrl = `https://x-access-token:${encodeURIComponent(token)}@github.com/${ghInfo.owner}/${ghInfo.repo}.git`;
+        res = await runGitAsync(
+          ["push", "--no-verify", pushUrl, `HEAD:refs/heads/${runBranch}`],
+          sessionPath,
+          300_000
+        );
+      } else {
+        res = await runGitAsync(
+          ["push", "--no-verify", "--set-upstream", "origin", runBranch],
+          sessionPath,
+          300_000
+        );
+      }
+
       if (res.code !== 0) {
         throw new Error(`git push failed: ${res.stderr}`);
       }
