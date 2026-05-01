@@ -7,6 +7,7 @@ import {
   fetchRun,
   fetchRunById,
   fetchWorkflows,
+  refreshWorkflowsFromRemote,
   removeRepo,
   triggerRun,
   type Repo,
@@ -85,6 +86,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [showAddRepo, setShowAddRepo] = useState(false);
   const [branchOverride, setBranchOverride] = useState("");
+  const [workflowRefreshBusy, setWorkflowRefreshBusy] = useState(false);
   const logOffset = useRef(0);
   const logEndRef = useRef<HTMLDivElement>(null);
   const deepLinkRunApplied = useRef(false);
@@ -195,6 +197,29 @@ export default function App() {
   }, [selectedWorkflow]);
 
   const selectedWorkflowMeta = workflows.find((w) => w.name === selectedWorkflow) ?? null;
+
+  async function handleRefreshWorkflowsCache() {
+    if (!selectedRepoId) return;
+    setWorkflowRefreshBusy(true);
+    setError(null);
+    try {
+      await refreshWorkflowsFromRemote(selectedRepoId);
+      const wfs = await fetchWorkflows(selectedRepoId);
+      setWorkflows(wfs);
+      const stored = localStorage.getItem(
+        `${SELECTED_WORKFLOW_KEY}:${selectedRepoId}`
+      );
+      const initial =
+        stored && wfs.some((w) => w.name === stored)
+          ? stored
+          : wfs[0]?.name ?? null;
+      setSelectedWorkflow(initial);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to refresh workflows");
+    } finally {
+      setWorkflowRefreshBusy(false);
+    }
+  }
   const declaredInputs = selectedWorkflowMeta?.inputs ?? [];
   const missingRequired = declaredInputs
     .filter((i) => i.required)
@@ -575,13 +600,38 @@ export default function App() {
             </button>
           ))}
           {selectedRepoId && workflows.length === 0 && (
-            <p style={{ padding: "12px 16px", fontSize: 12, color: "var(--text-dim)" }}>
-              No workflows in this repo. Add YAML files to <br />
-              <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
-                .zeverse/workflows/
-              </code>{" "}
-              in the repo&apos;s default branch.
-            </p>
+            <div style={{ padding: "12px 16px", fontSize: 12, color: "var(--text-dim)" }}>
+              <p style={{ margin: "0 0 8px 0" }}>
+                No workflows in the hub cache. Files are loaded only from branch{" "}
+                <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                  {selectedRepo?.defaultBranch ?? "?"}
+                </code>{" "}
+                (see <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>repos.json</code>
+                ). Push{" "}
+                <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                  .zeverse/workflows/*.yaml
+                </code>{" "}
+                to that branch on the remote, or change <code>defaultBranch</code> to match your
+                branch.
+              </p>
+              <button
+                type="button"
+                disabled={workflowRefreshBusy}
+                onClick={() => void handleRefreshWorkflowsCache()}
+                style={{
+                  padding: "4px 10px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: workflowRefreshBusy ? "wait" : "pointer",
+                  borderRadius: 4,
+                  border: "1px solid var(--border)",
+                  background: "var(--surface-hover)",
+                  color: "var(--text)",
+                }}
+              >
+                {workflowRefreshBusy ? "Refreshing…" : "Re-fetch workflows from Git"}
+              </button>
+            </div>
           )}
         </nav>
       </aside>

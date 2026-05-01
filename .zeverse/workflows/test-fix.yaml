@@ -4,11 +4,11 @@ description: >-
   and repeat until tests pass or max iterations. Opens a PR on success (branch isolation).
 inputs:
   - id: install_command
-    label: Install command (optional, e.g. npm ci)
+    label: Install command (optional, e.g. npm install --legacy-peer-deps)
     required: false
   - id: test_command
     label: >-
-      Test command (default for this hub is npm ci && npm run test if omitted)
+      Test command (default for this hub is npm install --legacy-peer-deps && npm run test if omitted)
     required: false
 isolation: branch
 steps:

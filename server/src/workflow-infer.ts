@@ -13,6 +13,8 @@ const WORKFLOW_KEYWORDS: [RegExp, string][] = [
   [/\bdebug\b/i, "debug"],
   [/\b(fix\s+failing\s+tests?|fix\s+unit\s+tests?|failing\s+tests?|green\s+the\s+build)\b/i, "test-fix"],
   [/\b(fix|bug|broken|crash|error)\b/i, "fix-bug"],
+  // Before generic "review" — otherwise "prd-review" / "prd review" match code-review.
+  [/\bprd(?:[-\s](?:review|analy[sz]e|analysis)|-analysis)\b/i, "prd-analysis"],
   [/\b(review|pr\b|pull\s*request|code\s+review)\b/i, "code-review"],
   [/\blint\b/i, "lint-fix"],
   [/\btest(?:s|ing)?\b/i, "test"],

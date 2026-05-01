@@ -9,6 +9,7 @@ import { findWorkflow } from "../workflows";
 import type { Repo } from "../repos";
 import { renderTemplate, TemplateContext } from "./template";
 import { appendLog } from "./state";
+import { clampUserPromptForModel, maxLlmUserCharsFromEnv } from "./llm-prompt-budget";
 
 /**
  * Base system instructions; optionally extended per workflow name (e.g. prd-analysis).
@@ -33,7 +34,16 @@ export async function executeLLMStep(
   runId: string,
   workflowName?: string
 ): Promise<string> {
-  const prompt = renderTemplate(step.prompt ?? "", ctx);
+  const rendered = renderTemplate(step.prompt ?? "", ctx);
+  const maxChars = maxLlmUserCharsFromEnv();
+  const { text: prompt, truncated, originalChars } = clampUserPromptForModel(rendered, maxChars);
+  if (truncated) {
+    appendLog(
+      repoId,
+      runId,
+      `[${step.id}] User prompt truncated for LLM: ${originalChars} → ${prompt.length} chars (max ${maxChars} per ZEVERSE_MAX_LLM_USER_CHARS)`
+    );
+  }
   appendLog(repoId, runId, `[${step.id}] Sending prompt to LLM (${prompt.length} chars)`);
 
   const response = await llm.chat([

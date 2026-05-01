@@ -1861,6 +1861,12 @@ interface HarnessRouteResult {
   repoId: string | null;
   workflow?: string;
   inputs?: Record<string, string>;
+  suggestions?: {
+    workflow: string;
+    inputs: Record<string, string>;
+    confidence: number;
+    reason: string;
+  }[];
   alternatives?: string[];
   confidence: number;
   reason: string;
@@ -1894,6 +1900,7 @@ interface ExecuteOptions {
   channel?: string;
   surface?: string;
   baseBranch?: string;
+  threadContext?: string;
 }
 
 async function callHarnessExecute(
@@ -1910,6 +1917,7 @@ async function callHarnessExecute(
     surface: opts.surface,
   };
   if (opts.baseBranch) body.baseBranch = opts.baseBranch;
+  if (opts.threadContext?.trim()) body.threadContext = opts.threadContext.trim();
 
   const res = await fetch(`${ZEVERSE_SERVER_URL}/api/harness/execute`, {
     method: "POST",
@@ -1945,6 +1953,10 @@ interface StoredProposal {
   channel: string;
   threadTs: string;
   baseBranch?: string;
+  /** Prior Slack thread discussion passed to `/api/harness/execute`. */
+  threadContext?: string;
+  /** When multiple Run buttons belong to one message, delete all on cancel/run. */
+  relatedProposalIds?: string[];
 }
 
 const proposalStore = new Map<string, StoredProposal>();
@@ -1955,6 +1967,114 @@ function storeProposal(p: StoredProposal): string {
   proposalStore.set(id, p);
   setTimeout(() => proposalStore.delete(id), 10 * 60 * 1000);
   return id;
+}
+
+function deleteProposalGroup(proposalId: string): void {
+  const p = proposalStore.get(proposalId);
+  const ids = p?.relatedProposalIds?.length ? p.relatedProposalIds : [proposalId];
+  for (const id of ids) proposalStore.delete(id);
+}
+
+// ─── Workflow catalog (Help) ────────────────────────────────────────────────
+
+interface WorkflowCatalogEntry {
+  name: string;
+  description: string;
+  inputs: { id: string; label: string; required?: boolean }[];
+}
+
+async function fetchReposDetailed(): Promise<{ id: string; name: string }[]> {
+  const res = await fetch(`${ZEVERSE_SERVER_URL}/api/repos`);
+  const data = await zeverseResponseJson<{ repos: { id: string; name: string }[] }>(
+    res,
+    "GET /api/repos"
+  );
+  return data.repos ?? [];
+}
+
+async function fetchWorkflowsCatalog(repoId: string): Promise<WorkflowCatalogEntry[]> {
+  const res = await fetch(
+    `${ZEVERSE_SERVER_URL}/api/workflows?repoId=${encodeURIComponent(repoId)}`
+  );
+  const data = await zeverseResponseJson<{ workflows: WorkflowCatalogEntry[] }>(
+    res,
+    "GET /api/workflows"
+  );
+  return data.workflows ?? [];
+}
+
+function workflowListMrkdwn(repoId: string, workflows: WorkflowCatalogEntry[]): string {
+  const lines: string[] = [`*Repo \`${repoId}\`*`];
+  for (const w of workflows) {
+    if (w.name === "harness") continue;
+    const ins = (w.inputs ?? [])
+      .map(
+        (i) =>
+          `\`${i.id}\`${i.required ? " _(required)_" : ""} — ${i.label}`
+      )
+      .join("\n   ");
+    lines.push(`• *\`${w.name}\`* — ${w.description}`);
+    if (ins) lines.push(`  _Inputs:_\n   ${ins}`);
+  }
+  if (lines.length === 1) lines.push("_No workflows (or only `harness`)._");
+  return lines.join("\n");
+}
+
+/** Split long mrkdwn into section blocks (Slack ~3000 per section). */
+function mrkdwnToSections(mrkdwn: string, maxChunk = 2800): { type: string; text: { type: string; text: string } }[] {
+  const out: { type: string; text: { type: string; text: string } }[] = [];
+  let rest = mrkdwn;
+  while (rest.length > 0) {
+    const chunk = rest.length <= maxChunk ? rest : rest.slice(0, maxChunk);
+    out.push({ type: "section", text: { type: "mrkdwn", text: chunk } });
+    rest = rest.slice(chunk.length);
+  }
+  return out;
+}
+
+async function buildWorkflowHelpBlocks(
+  repoId: string | null
+): Promise<{ type: string; text: { type: string; text: string } }[]> {
+  if (repoId) {
+    const wfs = await fetchWorkflowsCatalog(repoId);
+    const md = workflowListMrkdwn(repoId, wfs);
+    return mrkdwnToSections(md);
+  }
+  const repos = await fetchReposDetailed();
+  const blocks: { type: string; text: { type: string; text: string } }[] = [];
+  for (const r of repos) {
+    const wfs = await fetchWorkflowsCatalog(r.id);
+    blocks.push(...mrkdwnToSections(workflowListMrkdwn(r.id, wfs)));
+  }
+  return blocks.length > 0 ? blocks : mrkdwnToSections("_No repos registered._");
+}
+
+async function postWorkflowHelpEphemeral(
+  client: any,
+  channel: string,
+  userId: string,
+  thread_ts: string | undefined,
+  repoId: string | null,
+  logger: any
+): Promise<void> {
+  try {
+    const blocks = await buildWorkflowHelpBlocks(repoId);
+    await client.chat.postEphemeral({
+      channel,
+      user: userId,
+      thread_ts,
+      text: "Zeverse workflow catalog",
+      blocks: blocks.slice(0, 45),
+    });
+  } catch (err: any) {
+    logger.error("postWorkflowHelpEphemeral:", err);
+    await client.chat.postEphemeral({
+      channel,
+      user: userId,
+      thread_ts,
+      text: `Could not load workflow catalog: ${err.message}`,
+    });
+  }
 }
 
 // ─── PRD PR proposal store (confirmation before raising PR) ─────────────────
@@ -2004,9 +2124,23 @@ function deletePrdPrProposal(id: string): void {
 
 // ─── Block Kit confirm UI ───────────────────────────────────────────────────
 
-function proposalBlocks(proposalId: string, p: StoredProposal) {
-  if (p.workflow === "prd-analysis") {
-    const docUrl = p.inputs.docUrl ?? "";
+function proposalBlocks(runProposalIds: string[]): any[] {
+  const resolved = runProposalIds
+    .map((id) => ({ id, p: proposalStore.get(id) }))
+    .filter((x): x is { id: string; p: StoredProposal } => !!x.p);
+  if (resolved.length === 0) return [];
+
+  const p0 = resolved[0].p;
+  const helpBtn = {
+    type: "button",
+    text: { type: "plain_text", text: "Help" },
+    action_id: "harness_help",
+    value: p0.repoId,
+  };
+
+  if (p0.workflow === "prd-analysis") {
+    const proposalId = resolved[0].id;
+    const docUrl = p0.inputs.docUrl ?? "";
     const docLink = docUrl ? `<${docUrl}|Open PRD>` : "";
     return [
       {
@@ -2014,7 +2148,7 @@ function proposalBlocks(proposalId: string, p: StoredProposal) {
         text: {
           type: "mrkdwn",
           text: [
-            `I can run *PRD analysis* on \`${p.repoId}\`.`,
+            `I can run *PRD analysis* on \`${p0.repoId}\`.`,
             docLink,
             `_Tap *Run* when you’re ready — I’ll summarize back in this thread._`,
           ].filter(Boolean).join("\n\n"),
@@ -2030,6 +2164,7 @@ function proposalBlocks(proposalId: string, p: StoredProposal) {
             action_id: "harness_run",
             value: proposalId,
           },
+          helpBtn,
           {
             type: "button",
             text: { type: "plain_text", text: "Cancel" },
@@ -2041,59 +2176,82 @@ function proposalBlocks(proposalId: string, p: StoredProposal) {
     ];
   }
 
-  const promptPreview = p.prompt.length > 200 ? p.prompt.slice(0, 200) + "…" : p.prompt;
+  const promptPreview =
+    p0.prompt.length > 200 ? p0.prompt.slice(0, 200) + "…" : p0.prompt;
+  const altLinesMaxInline = 5;
   const altLines =
-    p.alternatives.length > 0
-      ? `\n\n*Other workflows you could pick:*\n${p.alternatives
-          .map((a, i) => `${i + 1}. \`${a}\``)
-          .join("\n")}`
+    p0.alternatives.length > 0
+      ? p0.alternatives.length <= altLinesMaxInline
+        ? `\n\n*Other workflows you could pick:*\n${p0.alternatives
+            .map((a, i) => `${i + 1}. \`${a}\``)
+            .join("\n")}`
+        : "\n\n_Use the menu below to choose a different workflow._"
       : "";
-  const sectionBody = [
-    `I’m suggesting *\`${p.workflow}\`* on *\`${p.repoId}\`* (${(p.confidence * 100).toFixed(0)}% confidence).`,
+
+  const intro =
+    resolved.length > 1
+      ? `*Top workflow picks* for \`${p0.repoId}\`:`
+      : `I’m suggesting a workflow for \`${p0.repoId}\`:`;
+  const pickLines: string[] = [intro, ""];
+  for (let i = 0; i < resolved.length; i++) {
+    const p = resolved[i].p;
+    pickLines.push(
+      `${i + 1}. *\`${p.workflow}\`* — ${(p.confidence * 100).toFixed(0)}% — _${p.reason}_`
+    );
+  }
+  pickLines.push(
     "",
-    `1. *Why this fit:* ${p.reason}`,
-    `2. *Your ask:* ${promptPreview}`,
-    `${altLines}\n\n_Use *Run* below to start, or pick another workflow from the menu._`,
-  ].join("\n");
+    `*Your ask:* ${promptPreview}`,
+    altLines,
+    "\n_Use a *Run* button to start that workflow, *Help* for the full catalog, or *Pick another…*_"
+  );
+
+  const runButtons = resolved.slice(0, 3).map(({ id, p }, i) => {
+    const wfShort =
+      p.workflow.length > 36 ? `${p.workflow.slice(0, 33)}…` : p.workflow;
+    const label = resolved.length === 1 ? "Run" : `Run ${wfShort}`;
+    const el: Record<string, unknown> = {
+      type: "button",
+      text: { type: "plain_text", text: label.slice(0, 75) },
+      action_id: "harness_run",
+      value: id,
+    };
+    if (i === 0) (el as { style?: string }).style = "primary";
+    return el;
+  });
+
+  const row2: any[] = [helpBtn];
+  if (p0.alternatives.length > 0) {
+    row2.push({
+      type: "static_select",
+      placeholder: { type: "plain_text", text: "Pick another…" },
+      action_id: "harness_pick",
+      options: p0.alternatives.map((alt) => ({
+        text: {
+          type: "plain_text",
+          text: alt.length > 75 ? `${alt.slice(0, 72)}…` : alt,
+        },
+        value: `${resolved[0].id}:${alt}`,
+      })),
+    });
+  }
+  row2.push({
+    type: "button",
+    text: { type: "plain_text", text: "Cancel" },
+    action_id: "harness_cancel",
+    value: resolved[0].id,
+  });
+
   return [
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: sectionBody,
+        text: pickLines.join("\n"),
       },
     },
-    {
-      type: "actions",
-      elements: [
-        {
-          type: "button",
-          text: { type: "plain_text", text: "Run" },
-          style: "primary",
-          action_id: "harness_run",
-          value: proposalId,
-        },
-        ...(p.alternatives.length > 0
-          ? [
-              {
-                type: "static_select",
-                placeholder: { type: "plain_text" as const, text: "Pick another..." },
-                action_id: "harness_pick",
-                options: p.alternatives.map((alt) => ({
-                  text: { type: "plain_text" as const, text: alt },
-                  value: `${proposalId}:${alt}`,
-                })),
-              },
-            ]
-          : []),
-        {
-          type: "button",
-          text: { type: "plain_text", text: "Cancel" },
-          action_id: "harness_cancel",
-          value: proposalId,
-        },
-      ],
-    },
+    { type: "actions", elements: runButtons },
+    { type: "actions", elements: row2 },
   ];
 }
 
@@ -2413,9 +2571,6 @@ async function handleHarnessMessage(
   }
 
   const repoId = route.repoId;
-  const workflow = route.workflow ?? DEFAULT_WORKFLOW;
-  const inputs = route.inputs ?? {};
-  const alternatives = route.alternatives ?? [];
 
   if (!repoId) {
     await client.chat.postMessage({
@@ -2426,24 +2581,49 @@ async function handleHarnessMessage(
     return;
   }
 
-  const proposalId = storeProposal({
-    repoId,
-    workflow,
-    inputs,
-    alternatives,
-    prompt,
-    confidence: route.confidence,
-    reason: route.reason,
-    channel,
-    threadTs: thread_ts,
-    baseBranch,
-  });
+  const suggestions =
+    route.suggestions && route.suggestions.length > 0
+      ? route.suggestions
+      : [
+          {
+            workflow: route.workflow ?? DEFAULT_WORKFLOW,
+            inputs: route.inputs ?? { requirement: prompt },
+            confidence: route.confidence,
+            reason: route.reason,
+          },
+        ];
 
+  const alternatives = route.alternatives ?? [];
+
+  const ids = suggestions.map((s) =>
+    storeProposal({
+      repoId,
+      workflow: s.workflow,
+      inputs: s.inputs,
+      alternatives,
+      prompt,
+      confidence: s.confidence,
+      reason: s.reason,
+      channel,
+      threadTs: thread_ts,
+      baseBranch,
+      threadContext: threadContext.trim() ? threadContext : undefined,
+    })
+  );
+  for (const id of ids) {
+    const pr = proposalStore.get(id)!;
+    pr.relatedProposalIds = [...ids];
+  }
+
+  const primary = suggestions[0];
   await client.chat.postMessage({
     channel,
     thread_ts,
-    blocks: proposalBlocks(proposalId, proposalStore.get(proposalId)!),
-    text: `I’m proposing *\`${workflow}\`* on *\`${repoId}\`*. Tap *Run* in the thread to start.`,
+    blocks: proposalBlocks(ids),
+    text:
+      suggestions.length > 1
+        ? `I’m proposing ${suggestions.length} workflows on \`${repoId}\`. Tap *Run* on the best match.`
+        : `I’m proposing *\`${primary.workflow}\`* on *\`${repoId}\`*. Tap *Run* in the thread to start.`,
   });
 }
 
@@ -2484,7 +2664,11 @@ app.action("harness_run", async ({ action, ack, body, client, logger }) => {
   const slackUser = (body as any).user?.id;
   try {
     const result = await callHarnessExecute(p.repoId, p.workflow, p.inputs, p.prompt, {
-      slackUser, channel, surface: "slack", baseBranch: p.baseBranch,
+      slackUser,
+      channel,
+      surface: "slack",
+      baseBranch: p.baseBranch,
+      threadContext: p.threadContext,
     });
     if (result.error) {
       const missingMsg = result.missing?.length
@@ -2542,7 +2726,7 @@ app.action("harness_run", async ({ action, ack, body, client, logger }) => {
       text: `Error connecting to Zeverse server: ${err.message}`,
     });
   }
-  proposalStore.delete(proposalId);
+  deleteProposalGroup(proposalId);
 });
 
 // ─── Button action: Pick another ────────────────────────────────────────────
@@ -2588,7 +2772,11 @@ app.action("harness_pick", async ({ action, ack, body, client, logger }) => {
   const slackUser = (body as any).user?.id;
   try {
     const result = await callHarnessExecute(p.repoId, newWorkflow, p.inputs, p.prompt, {
-      slackUser, channel, surface: "slack",
+      slackUser,
+      channel,
+      surface: "slack",
+      baseBranch: p.baseBranch,
+      threadContext: p.threadContext,
     });
     if (result.error) {
       const missingMsg = result.missing?.length
@@ -2646,14 +2834,24 @@ app.action("harness_pick", async ({ action, ack, body, client, logger }) => {
       text: `Error connecting to Zeverse server: ${err.message}`,
     });
   }
-  proposalStore.delete(proposalId);
+  deleteProposalGroup(proposalId);
+});
+// ─── Button action: Help (workflow catalog) ─────────────────────────────────
+app.action("harness_help", async ({ ack, action, body, client, logger }) => {
+  await ack();
+  const repoId = String((action as any).value ?? "").trim();
+  const userId = (body as any).user?.id;
+  const channel = (body as any).channel?.id;
+  const thread_ts = (body as any).message?.thread_ts ?? (body as any).message?.ts;
+  if (!userId || !channel) return;
+  await postWorkflowHelpEphemeral(client, channel, userId, thread_ts, repoId || null, logger);
 });
 
 // ─── Button action: Cancel ──────────────────────────────────────────────────
 app.action("harness_cancel", async ({ action, ack, body, client }) => {
   await ack();
   const proposalId = (action as any).value;
-  proposalStore.delete(proposalId);
+  deleteProposalGroup(proposalId);
   const channel = (body as any).channel?.id;
   const messageTs = (body as any).message?.ts;
   if (messageTs && channel) {
@@ -3523,6 +3721,22 @@ app.event("app_mention", async ({ event, client, logger }) => {
   const thread_ts = (event as any).thread_ts ?? (event as any).ts;
 
   const stripped = stripMentions(text);
+
+  if (stripped.trim().toLowerCase() === "help") {
+    const userId = (event as any).user as string;
+    let repoHint: string | null = DEFAULT_REPO_ID.trim() ? DEFAULT_REPO_ID : null;
+    if (thread_ts) {
+      const h = lookupHarnessThread(channel, thread_ts);
+      if (h?.repoId) repoHint = h.repoId;
+      else {
+        const prd =
+          lookupPrdThread(channel, thread_ts) ?? lookupPrdThreadByChannel(channel);
+        if (prd?.repoId) repoHint = prd.repoId;
+      }
+    }
+    await postWorkflowHelpEphemeral(client, channel, userId, thread_ts, repoHint, logger);
+    return;
+  }
 
   // Intercept add-repo before any other routing
   const addRepoParsed = parseAddRepoCommand(stripped);

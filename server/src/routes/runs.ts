@@ -73,7 +73,7 @@ runRoutes.post("/run-workflow", async (req: Request, res: Response) => {
     };
     const mergedInputs = autofillInputs(workflow.inputs, baseInputs, prompt ?? "");
     if (workflowName === "test-fix" && !(mergedInputs.test_command ?? "").trim()) {
-      mergedInputs.test_command = "npm ci && npm run test";
+      mergedInputs.test_command = "npm install --legacy-peer-deps && npm run test";
     }
 
     const runId = await startRun(repo, workflow, prompt ?? "", mergedInputs, config, baseBranch);

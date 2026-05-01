@@ -2,8 +2,14 @@ import { Router, Request, Response } from "express";
 import { listRepos, requireRepo } from "../repos";
 import { loadConfig } from "../config";
 import { createLLMProvider } from "../llm";
-import { loadWorkflows, findWorkflow, loadRepoRules } from "../workflows";
+import {
+  loadWorkflows,
+  findWorkflow,
+  loadRepoRules,
+  type Workflow,
+} from "../workflows";
 import { matchWorkflowKeyword } from "../workflow-infer";
+import { extractPrdDocUrl } from "../prd-doc-url";
 import { startRun, runSingleStep } from "../runner";
 import { assertAllowed, appendAuditLog, PolicyError } from "../policy";
 
@@ -16,11 +22,20 @@ function extractFreshreleaseTaskUrl(text: string): string | undefined {
   return m?.[0];
 }
 
+export interface HarnessRouteSuggestion {
+  workflow: string;
+  inputs: Record<string, string>;
+  confidence: number;
+  reason: string;
+}
+
 interface HarnessRouteResponse {
   type: "proposal" | "answer" | "clarify";
   repoId: string | null;
   workflow?: string;
   inputs?: Record<string, string>;
+  /** Top 1–3 workflow picks (first entry matches `workflow` / `inputs` / `confidence` / `reason`). */
+  suggestions?: HarnessRouteSuggestion[];
   alternatives?: string[];
   confidence: number;
   reason: string;
@@ -30,6 +45,81 @@ interface HarnessRouteResponse {
 }
 
 const CONFIDENCE_THRESHOLD = 0.6;
+
+/** Slack Block Kit `static_select` allows at most 100 options per menu. */
+const MAX_PROPOSAL_ALTERNATIVES = 100;
+
+/** Names for “Pick another…” minus meta-router `harness` and every suggested workflow. */
+function proposalAlternativesExcluding(
+  workflows: Workflow[],
+  excludeNames: string[]
+): string[] {
+  const ex = new Set(excludeNames);
+  const names = workflows
+    .map((w) => w.name)
+    .filter((name) => name !== "harness" && !ex.has(name))
+    .sort((a, b) => a.localeCompare(b));
+  return names.slice(0, MAX_PROPOSAL_ALTERNATIVES);
+}
+
+function toSuggestionEntry(
+  entry: any,
+  prompt: string,
+  workflowNames: Set<string>
+): HarnessRouteSuggestion | null {
+  const wf = typeof entry?.workflow === "string" ? entry.workflow : "";
+  if (!workflowNames.has(wf)) return null;
+  const confidence = typeof entry?.confidence === "number" ? entry.confidence : 0;
+  if (confidence < CONFIDENCE_THRESHOLD) return null;
+  const reason = typeof entry?.reason === "string" ? entry.reason : "";
+  const routeInputsParsed =
+    typeof entry?.inputs === "object" && entry.inputs ? entry.inputs : {};
+  return {
+    workflow: wf,
+    inputs: { requirement: prompt, ...routeInputsParsed },
+    confidence,
+    reason,
+  };
+}
+
+function dedupeSuggestions(s: HarnessRouteSuggestion[]): HarnessRouteSuggestion[] {
+  const byWf = new Map<string, HarnessRouteSuggestion>();
+  for (const x of s) {
+    const prev = byWf.get(x.workflow);
+    if (!prev || x.confidence > prev.confidence) byWf.set(x.workflow, x);
+  }
+  return [...byWf.values()].sort((a, b) => b.confidence - a.confidence);
+}
+
+/**
+ * From harness.yaml route step JSON or server LLM JSON: `suggestions: [...]` (preferred)
+ * or legacy single `workflow` / `inputs` / `confidence` / `reason`.
+ */
+function buildTopSuggestionsFromParsed(
+  parsed: any,
+  prompt: string,
+  workflowNames: Set<string>
+): HarnessRouteSuggestion[] {
+  if (Array.isArray(parsed?.suggestions) && parsed.suggestions.length > 0) {
+    const out: HarnessRouteSuggestion[] = [];
+    for (const s of parsed.suggestions) {
+      const e = toSuggestionEntry(s, prompt, workflowNames);
+      if (e) out.push(e);
+    }
+    return dedupeSuggestions(out).slice(0, 3);
+  }
+  const e = toSuggestionEntry(
+    {
+      workflow: parsed?.workflow,
+      inputs: parsed?.inputs,
+      confidence: parsed?.confidence,
+      reason: parsed?.reason,
+    },
+    prompt,
+    workflowNames
+  );
+  return e ? [e] : [];
+}
 
 async function inferRepoId(prompt: string): Promise<{ repoId: string | null; reason: string }> {
   const repos = listRepos();
@@ -138,7 +228,15 @@ harnessRoutes.post("/harness/route", async (req: Request, res: Response) => {
       res.json({
         type: "answer",
         repoId,
-        answer: "This repo has no workflows defined yet. Add `.zeverse/workflows/*.yaml` to get started.",
+        answer: [
+          "No workflow files found for this repo in the hub cache.",
+          "",
+          `Zeverse only reads \`.zeverse/workflows/*.yaml\` from **one Git branch**: the \`defaultBranch\` stored for this repo (\`${repo.defaultBranch}\` from \`origin\` ${repo.origin}).`,
+          "",
+          "If you added workflows locally, **push them to that branch** (or change \`defaultBranch\` in \`repos.json\` to match the branch that contains \`.zeverse/\`, then save).",
+          "",
+          `After the remote is updated, refresh the cache: \`POST /api/repos/${repoId}/refresh-workflows\` (or wait ~60s).`,
+        ].join("\n"),
         confidence: 0,
         reason: "No workflows found in repo",
       } satisfies HarnessRouteResponse);
@@ -151,20 +249,28 @@ harnessRoutes.post("/harness/route", async (req: Request, res: Response) => {
       const frUrl = extractFreshreleaseTaskUrl(prompt);
       const inputs: Record<string, string> = { requirement: prompt };
       if (frUrl) inputs.frUrl = frUrl;
+      if (keywordWorkflow === "prd-analysis") {
+        const docUrl = extractPrdDocUrl(prompt);
+        if (docUrl) inputs.docUrl = docUrl;
+      }
 
-      const nonHarness = workflows
-        .filter((w) => w.name !== "harness" && w.name !== keywordWorkflow)
-        .slice(0, 3)
-        .map((w) => w.name);
-
+      const reason = `Keyword routing → ${keywordWorkflow}`;
       res.json({
         type: "proposal",
         repoId,
         workflow: keywordWorkflow,
         inputs,
-        alternatives: nonHarness,
+        suggestions: [
+          {
+            workflow: keywordWorkflow,
+            inputs: { ...inputs },
+            confidence: 0.95,
+            reason,
+          },
+        ],
+        alternatives: proposalAlternativesExcluding(workflows, [keywordWorkflow]),
         confidence: 0.95,
-        reason: `Keyword routing → ${keywordWorkflow}`,
+        reason,
       } satisfies HarnessRouteResponse);
       return;
     }
@@ -198,35 +304,39 @@ harnessRoutes.post("/harness/route", async (req: Request, res: Response) => {
           const jsonMatch = routeOutput.match(/\{[\s\S]*\}/);
           if (jsonMatch) {
             const parsed = JSON.parse(jsonMatch[0]);
+            const suggestions = buildTopSuggestionsFromParsed(parsed, prompt, workflowNames);
             const wfName = typeof parsed.workflow === "string" ? parsed.workflow : "ask";
             const confidence = typeof parsed.confidence === "number" ? parsed.confidence : 0;
             const reason = typeof parsed.reason === "string" ? parsed.reason : "";
-            const routeInputsParsed = typeof parsed.inputs === "object" && parsed.inputs ? parsed.inputs : {};
-            const alternatives = Array.isArray(parsed.alternatives)
-              ? parsed.alternatives.filter((a: any) => typeof a === "string")
-              : [];
 
-            if (!workflowNames.has(wfName) || confidence < CONFIDENCE_THRESHOLD) {
+            if (suggestions.length === 0) {
               res.json({
                 type: "answer",
                 repoId,
-                answer: reason || `I couldn't confidently pick a workflow for that. Could you rephrase?`,
+                answer:
+                  reason ||
+                  `I couldn't confidently pick a workflow for that. Could you rephrase?`,
                 confidence,
                 reason: !workflowNames.has(wfName)
                   ? `LLM picked unknown workflow "${wfName}"`
-                  : "Low confidence",
+                  : confidence < CONFIDENCE_THRESHOLD
+                    ? "Low confidence"
+                    : reason || "No valid suggestions",
               } satisfies HarnessRouteResponse);
               return;
             }
 
+            const primary = suggestions[0];
+            const selectedNames = suggestions.map((s) => s.workflow);
             res.json({
               type: "proposal",
               repoId,
-              workflow: wfName,
-              inputs: { requirement: prompt, ...routeInputsParsed },
-              alternatives,
-              confidence,
-              reason,
+              workflow: primary.workflow,
+              inputs: primary.inputs,
+              suggestions,
+              alternatives: proposalAlternativesExcluding(workflows, selectedNames),
+              confidence: primary.confidence,
+              reason: primary.reason,
             } satisfies HarnessRouteResponse);
             return;
           }
@@ -252,25 +362,33 @@ harnessRoutes.post("/harness/route", async (req: Request, res: Response) => {
     const llm = createLLMProvider(loadConfig());
     const systemParts = [
       "You are a smart intent router for a software development assistant.",
-      "Given a user prompt and a list of available workflows, pick the single best workflow.",
-      "Also extract values for any workflow inputs that the prompt implicitly provides.",
+      "Given a user prompt and a list of available workflows, pick up to 3 best-matching workflows (ordered by fit).",
+      "Also extract values for any workflow inputs that the prompt implicitly provides for each pick.",
+      "",
+      "Prefer responding with a top-level \"suggestions\" array (1 to 3 entries).",
+      "Each entry: workflow name, inputs object, confidence, reason.",
       "",
       "Respond with ONLY a JSON object (no markdown fences, no prose):",
       "{",
-      '  "workflow": "<workflow name from the list>",',
-      '  "inputs": { "<inputId>": "<extracted value>", ... },',
-      '  "alternatives": ["<second-best>", "<third-best>"],',
-      '  "confidence": <0.0 to 1.0>,',
-      '  "reason": "<one sentence explaining the pick>"',
+      '  "suggestions": [',
+      '    { "workflow": "<name>", "inputs": { "<inputId>": "<value>", ... }, "confidence": <0.0-1.0>, "reason": "<short>" },',
+      "    ... up to 3",
+      "  ],",
+      '  "workflow": "<same as first suggestion; for backward compatibility>",',
+      '  "inputs": { ... },',
+      '  "confidence": <number>,',
+      '  "reason": "<string>"',
       "}",
       "",
       "Rules:",
-      "- confidence 0.9+: prompt clearly matches a specific workflow.",
+      "- Include at least one suggestion with confidence 0.6+ when there is a reasonable match.",
+      "- confidence 0.9+: prompt clearly matches that workflow.",
       "- confidence 0.6-0.9: reasonable match but some ambiguity.",
-      '- confidence < 0.6: no good match; set workflow to "ask".',
-      "- For the inputs field, map prompt content to the workflow's declared inputs.",
+      '- confidence < 0.6: omit that workflow from suggestions (or use legacy workflow \"ask\" only if nothing qualifies).',
+      "- For inputs, map prompt content to the workflow's declared inputs.",
       '  The main prompt text should go into the primary required input (usually "requirement").',
       "- ONLY use workflow names from the provided list.",
+      "- If you only have one good match, return a single-element suggestions array.",
     ];
     if (repoRules) {
       systemParts.push(
@@ -315,19 +433,17 @@ harnessRoutes.post("/harness/route", async (req: Request, res: Response) => {
       return;
     }
 
+    const suggestions = buildTopSuggestionsFromParsed(parsed, prompt, workflowNames);
     const workflow = typeof parsed.workflow === "string" ? parsed.workflow : "ask";
     const confidence = typeof parsed.confidence === "number" ? parsed.confidence : 0;
     const reason = typeof parsed.reason === "string" ? parsed.reason : "";
-    const routedInputs = typeof parsed.inputs === "object" && parsed.inputs ? parsed.inputs : {};
-    const alternatives = Array.isArray(parsed.alternatives)
-      ? parsed.alternatives.filter((a: any) => typeof a === "string")
-      : [];
 
-    if (!workflowNames.has(workflow) || confidence < CONFIDENCE_THRESHOLD) {
+    if (suggestions.length === 0) {
       res.json({
         type: "answer",
         repoId,
-        answer: reason || "I'm not sure what to do with that. Could you be more specific?",
+        answer:
+          reason || "I'm not sure what to do with that. Could you be more specific?",
         confidence,
         reason: !workflowNames.has(workflow)
           ? `LLM picked unknown workflow "${workflow}"`
@@ -336,14 +452,17 @@ harnessRoutes.post("/harness/route", async (req: Request, res: Response) => {
       return;
     }
 
+    const primary = suggestions[0];
+    const selectedNames = suggestions.map((s) => s.workflow);
     res.json({
       type: "proposal",
       repoId,
-      workflow,
-      inputs: { requirement: prompt, ...routedInputs },
-      alternatives,
-      confidence,
-      reason,
+      workflow: primary.workflow,
+      inputs: primary.inputs,
+      suggestions,
+      alternatives: proposalAlternativesExcluding(workflows, selectedNames),
+      confidence: primary.confidence,
+      reason: primary.reason,
     } satisfies HarnessRouteResponse);
   } catch (err: any) {
     const msg = err?.message ?? String(err);
@@ -370,7 +489,7 @@ harnessRoutes.post("/harness/execute", async (req: Request, res: Response) => {
   try {
     const {
       repoId, workflow: workflowName, inputs, prompt,
-      slackUser, channel, surface, baseBranch,
+      slackUser, channel, surface, baseBranch, threadContext,
     } = req.body ?? {};
 
     if (!repoId) {
@@ -408,11 +527,24 @@ harnessRoutes.post("/harness/execute", async (req: Request, res: Response) => {
       requirement: inputs?.requirement ?? prompt ?? "",
     };
 
+    let runPrompt = (prompt ?? "").trim();
+    if (typeof threadContext === "string" && threadContext.trim()) {
+      const tc = threadContext.trim();
+      mergedInputs.threadContext = tc;
+      runPrompt = `${tc}\n\n--- USER REQUEST ---\n${runPrompt}`;
+    }
+
     const frUrl = extractFreshreleaseTaskUrl(prompt ?? "");
     if (frUrl && !mergedInputs.frUrl) mergedInputs.frUrl = frUrl;
 
+    if (workflowName === "prd-analysis" && !(mergedInputs.docUrl ?? "").trim()) {
+      const docUrl =
+        extractPrdDocUrl(prompt ?? "") || extractPrdDocUrl(mergedInputs.requirement ?? "");
+      if (docUrl) mergedInputs.docUrl = docUrl;
+    }
+
     if (workflowName === "test-fix" && !(mergedInputs.test_command ?? "").trim()) {
-      mergedInputs.test_command = "npm ci && npm run test";
+      mergedInputs.test_command = "npm install --legacy-peer-deps && npm run test";
     }
 
     const missing = workflow.inputs
@@ -428,7 +560,14 @@ harnessRoutes.post("/harness/execute", async (req: Request, res: Response) => {
     }
 
     const config = loadConfig();
-    const runId = await startRun(repo, workflow, prompt ?? "", mergedInputs, config, baseBranch);
+    const runId = await startRun(
+      repo,
+      workflow,
+      runPrompt || (prompt ?? ""),
+      mergedInputs,
+      config,
+      baseBranch
+    );
 
     // Audit log
     appendAuditLog({

@@ -88,6 +88,15 @@ export async function fetchWorkflows(repoId: string): Promise<WorkflowSummary[]>
   return data.workflows;
 }
 
+/** Force re-fetch of `.zeverse/` from the repo remote (defaults to registered `defaultBranch`). */
+export async function refreshWorkflowsFromRemote(repoId: string): Promise<void> {
+  const res = await fetch(
+    `${BASE}/repos/${encodeURIComponent(repoId)}/refresh-workflows`,
+    { method: "POST" }
+  );
+  await json<{ ok: true }>(res);
+}
+
 export async function fetchInferWorkflow(
   repoId: string,
   prompt: string

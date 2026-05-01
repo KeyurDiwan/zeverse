@@ -7,6 +7,8 @@
  */
 
 import assert from "node:assert/strict";
+import { matchWorkflowKeyword } from "../../workflow-infer";
+import { extractPrdDocUrl } from "../../prd-doc-url";
 
 function run(test: string, fn: () => void) {
   try {
@@ -26,6 +28,12 @@ interface HarnessRouteResult {
   repoId: string | null;
   workflow?: string;
   inputs?: Record<string, string>;
+  suggestions?: {
+    workflow: string;
+    inputs: Record<string, string>;
+    confidence: number;
+    reason: string;
+  }[];
   alternatives?: string[];
   confidence: number;
   reason: string;
@@ -36,29 +44,18 @@ interface HarnessRouteResult {
 
 const CONFIDENCE_THRESHOLD = 0.6;
 
-// Keyword patterns from workflow-infer.ts
-const WORKFLOW_KEYWORDS: [RegExp, string][] = [
-  [/\b(analy[sz]e\s+fr|fr\s+analy[sz]e)\b/i, "fr-analyze"],
-  [/\b(finish\s+fr|fix\s+fr|fr\s+fix)\b/i, "fr-task-finisher"],
-  [/freshrelease\.com\/ws\/.*\/tasks\//i, "fr-task-finisher"],
-  [/\b(write\s+tests?|add\s+tests?)\b/i, "test-write"],
-  [/\b(raise\s+pr|open\s+pr|create\s+pr)\b/i, "pr-raise"],
-  [/\b(fix\s+failing\s+tests?|fix\s+unit\s+tests?|failing\s+tests?|green\s+the\s+build)\b/i, "test-fix"],
-  [/\b(fix|bug|broken|crash|error)\b/i, "fix-bug"],
-  [/\b(review|pr\b|pull\s*request|code\s+review)\b/i, "code-review"],
-  [/\blint\b/i, "lint-fix"],
-  [/\b(explain|understand|how\s*does)\b/i, "explain-codebase"],
-  [/\b(upgrade|bump)\b/i, "upgrade-dep"],
-  [/\bprd\b|docs\.google\.com\/document/i, "prd-analysis"],
-];
+/** Mirrors server `MAX_PROPOSAL_ALTERNATIVES` / `proposalAlternatives` using only workflow names. */
+const MAX_PROPOSAL_ALTERNATIVES = 100;
 
-function matchKeyword(prompt: string, available: Set<string>): string | null {
-  for (const [pattern, workflow] of WORKFLOW_KEYWORDS) {
-    if (!pattern.test(prompt)) continue;
-    if (available.has(workflow)) return workflow;
-    return null;
-  }
-  return null;
+function simulateProposalAlternativesExcluding(
+  available: Set<string>,
+  excludeNames: string[]
+): string[] {
+  const ex = new Set(excludeNames);
+  return [...available]
+    .filter((w) => w !== "harness" && !ex.has(w))
+    .sort((a, b) => a.localeCompare(b))
+    .slice(0, MAX_PROPOSAL_ALTERNATIVES);
 }
 
 interface MockLLMRoute {
@@ -67,6 +64,13 @@ interface MockLLMRoute {
   alternatives: string[];
   confidence: number;
   reason: string;
+  /** Optional multi-pick; when set, used instead of single workflow path. */
+  suggestions?: {
+    workflow: string;
+    inputs: Record<string, string>;
+    confidence: number;
+    reason: string;
+  }[];
 }
 
 function simulateHarnessRoute(
@@ -96,16 +100,30 @@ function simulateHarnessRoute(
     };
   }
 
-  const keyword = matchKeyword(prompt, available);
+  const keyword = matchWorkflowKeyword(prompt, available);
   if (keyword) {
+    const inputs: Record<string, string> = { requirement: prompt };
+    if (keyword === "prd-analysis") {
+      const docUrl = extractPrdDocUrl(prompt);
+      if (docUrl) inputs.docUrl = docUrl;
+    }
+    const reason = `Keyword routing → ${keyword}`;
     return {
       type: "proposal",
       repoId,
       workflow: keyword,
-      inputs: { requirement: prompt },
-      alternatives: [...available].filter((w) => w !== keyword && w !== "harness").slice(0, 3),
+      inputs,
+      suggestions: [
+        {
+          workflow: keyword,
+          inputs: { ...inputs },
+          confidence: 0.95,
+          reason,
+        },
+      ],
+      alternatives: simulateProposalAlternativesExcluding(available, [keyword]),
       confidence: 0.95,
-      reason: `Keyword routing → ${keyword}`,
+      reason,
     };
   }
 
@@ -116,6 +134,39 @@ function simulateHarnessRoute(
       answer: "Sorry, I couldn't understand that.",
       confidence: 0,
       reason: "LLM did not return valid JSON",
+    };
+  }
+
+  if (llmResponse.suggestions && llmResponse.suggestions.length > 0) {
+    const valid = llmResponse.suggestions.filter(
+      (s) => available.has(s.workflow) && s.confidence >= CONFIDENCE_THRESHOLD
+    );
+    if (valid.length === 0) {
+      return {
+        type: "answer",
+        repoId,
+        answer: llmResponse.reason || "Low confidence",
+        confidence: llmResponse.confidence,
+        reason: "Low confidence",
+      };
+    }
+    const top = valid.slice(0, 3);
+    const selectedNames = top.map((s) => s.workflow);
+    const suggestions = top.map((s) => ({
+      workflow: s.workflow,
+      inputs: { requirement: prompt, ...s.inputs },
+      confidence: s.confidence,
+      reason: s.reason,
+    }));
+    return {
+      type: "proposal",
+      repoId,
+      workflow: suggestions[0].workflow,
+      inputs: suggestions[0].inputs,
+      suggestions,
+      alternatives: simulateProposalAlternativesExcluding(available, selectedNames),
+      confidence: suggestions[0].confidence,
+      reason: suggestions[0].reason,
     };
   }
 
@@ -136,7 +187,15 @@ function simulateHarnessRoute(
     repoId,
     workflow: llmResponse.workflow,
     inputs: { requirement: prompt, ...llmResponse.inputs },
-    alternatives: llmResponse.alternatives,
+    suggestions: [
+      {
+        workflow: llmResponse.workflow,
+        inputs: { requirement: prompt, ...llmResponse.inputs },
+        confidence: llmResponse.confidence,
+        reason: llmResponse.reason,
+      },
+    ],
+    alternatives: simulateProposalAlternativesExcluding(available, [llmResponse.workflow]),
     confidence: llmResponse.confidence,
     reason: llmResponse.reason,
   };
@@ -186,7 +245,7 @@ run("proposal: LLM picks dev with high confidence", () => {
   assert.equal(result.type, "proposal");
   assert.equal(result.workflow, "dev");
   assert.equal(result.confidence, 0.88);
-  assert.deepEqual(result.alternatives, ["fix-bug"]);
+  assert.deepEqual(result.alternatives, simulateProposalAlternativesExcluding(AVAILABLE, ["dev"]));
 });
 
 run("answer: LLM confidence below threshold", () => {
@@ -230,14 +289,45 @@ run("proposal: FR analyze keyword", () => {
 });
 
 run("proposal: Google Doc URL → prd-analysis", () => {
-  const result = simulateHarnessRoute(
-    "https://docs.google.com/document/d/abc123/edit",
-    "ubx-ui",
-    AVAILABLE,
-    null
-  );
+  const url = "https://docs.google.com/document/d/abc123/edit";
+  const result = simulateHarnessRoute(url, "ubx-ui", AVAILABLE, null);
   assert.equal(result.type, "proposal");
   assert.equal(result.workflow, "prd-analysis");
+  assert.equal(result.inputs!.docUrl, url);
+});
+
+run("proposal: prd-review + Google Doc → prd-analysis with docUrl", () => {
+  const url = "https://docs.google.com/document/d/abc123/edit";
+  const result = simulateHarnessRoute(`prd-review ${url}`, "ubx-ui", AVAILABLE, null);
+  assert.equal(result.type, "proposal");
+  assert.equal(result.workflow, "prd-analysis");
+  assert.equal(result.inputs!.docUrl, url);
+});
+
+run("proposal: LLM returns top-3 suggestions", () => {
+  const result = simulateHarnessRoute(
+    "optimize dashboard load time and improve caching strategy",
+    "ubx-ui",
+    AVAILABLE,
+    {
+      workflow: "dev",
+      inputs: {},
+      alternatives: [],
+      confidence: 0.85,
+      reason: "n/a",
+      suggestions: [
+        { workflow: "fix-bug", inputs: {}, confidence: 0.88, reason: "bugfix" },
+        { workflow: "test-write", inputs: { focus: "auth" }, confidence: 0.72, reason: "tests" },
+        { workflow: "dev", inputs: {}, confidence: 0.65, reason: "feature" },
+      ],
+    }
+  );
+  assert.equal(result.type, "proposal");
+  assert.equal(result.suggestions!.length, 3);
+  assert.equal(result.workflow, "fix-bug");
+  assert.ok(!result.alternatives!.includes("fix-bug"));
+  assert.ok(!result.alternatives!.includes("test-write"));
+  assert.ok(!result.alternatives!.includes("dev"));
 });
 
 run("proposal includes alternatives from available workflows", () => {

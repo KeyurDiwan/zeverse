@@ -99,41 +99,82 @@ function workflowsCacheDir(repoId: string): string {
   );
 }
 
+/** Sparse paths for workflow/rule sync; must match hub capabilities (.zeverse-only). */
+function applyWorkflowSparseCheckout(cacheDir: string): void {
+  // --no-cone: .cursorrules is a file, not a directory; cone mode would skip it.
+  const res = spawnSync(
+    "git",
+    [
+      "sparse-checkout",
+      "set",
+      "--no-cone",
+      "/.zeverse/",
+      "/.cursorrules",
+      "/.cursor/rules/",
+    ],
+    { cwd: cacheDir, stdio: "pipe", encoding: "utf-8" }
+  );
+  if (res.status !== 0) {
+    throw new Error(`Workflow sparse-checkout failed: ${res.stderr}`);
+  }
+}
+
 function ensureWorkflowsCache(repo: Repo): string {
   const cacheDir = workflowsCacheDir(repo.id);
+  const workflowsDir = path.join(cacheDir, ".zeverse", "workflows");
   const now = Date.now();
   const lastRefresh = cacheTimestamps.get(repo.id) ?? 0;
+  const hasGit = fs.existsSync(path.join(cacheDir, ".git"));
+  const ttlFresh = hasGit && now - lastRefresh < CACHE_TTL_MS;
 
-  if (fs.existsSync(path.join(cacheDir, ".git")) && now - lastRefresh < CACHE_TTL_MS) {
+  // Fast path — but not if the tree is missing (e.g. cache was created with /.archon/ only).
+  if (ttlFresh && fs.existsSync(workflowsDir)) {
     return cacheDir;
   }
 
-  if (!fs.existsSync(path.join(cacheDir, ".git"))) {
+  if (ttlFresh && hasGit && !fs.existsSync(workflowsDir)) {
+    applyWorkflowSparseCheckout(cacheDir);
+    if (fs.existsSync(workflowsDir)) {
+      return cacheDir;
+    }
+    cacheTimestamps.delete(repo.id);
+  }
+
+  if (!hasGit) {
     fs.mkdirSync(cacheDir, { recursive: true });
-    const cloneRes = spawnSync("git", [
-      "clone", "--depth=1",
-      "--branch", repo.defaultBranch,
-      "--filter=blob:none", "--sparse",
-      repo.origin, cacheDir,
-    ], { stdio: "pipe", encoding: "utf-8", timeout: 120_000 });
+    const cloneRes = spawnSync(
+      "git",
+      [
+        "clone",
+        "--depth=1",
+        "--branch",
+        repo.defaultBranch,
+        "--filter=blob:none",
+        "--sparse",
+        repo.origin,
+        cacheDir,
+      ],
+      { stdio: "pipe", encoding: "utf-8", timeout: 120_000 }
+    );
 
     if (cloneRes.status !== 0) {
       throw new Error(`Workflow cache clone failed: ${cloneRes.stderr}`);
     }
 
-    // --no-cone is required because .cursorrules is a file, not a directory;
-    // cone mode silently ignores file patterns and reverts to defaults.
-    spawnSync("git", [
-      "sparse-checkout", "set", "--no-cone",
-      "/.zeverse/", "/.cursorrules", "/.cursor/rules/",
-    ], { cwd: cacheDir, stdio: "pipe", encoding: "utf-8" });
+    applyWorkflowSparseCheckout(cacheDir);
   } else {
     spawnSync("git", ["fetch", "origin", repo.defaultBranch, "--depth=1"], {
-      cwd: cacheDir, stdio: "pipe", encoding: "utf-8", timeout: 60_000,
+      cwd: cacheDir,
+      stdio: "pipe",
+      encoding: "utf-8",
+      timeout: 60_000,
     });
     spawnSync("git", ["reset", "--hard", `origin/${repo.defaultBranch}`], {
-      cwd: cacheDir, stdio: "pipe", encoding: "utf-8",
+      cwd: cacheDir,
+      stdio: "pipe",
+      encoding: "utf-8",
     });
+    applyWorkflowSparseCheckout(cacheDir);
   }
 
   cacheTimestamps.set(repo.id, now);

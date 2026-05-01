@@ -8,12 +8,12 @@ inputs:
     label: Test path pattern (e.g. src/pages/billing, leave blank for all)
     required: false
 steps:
-  # ubx-ui needs --legacy-peer-deps (peer conflicts). Prefer ci when lockfile exists.
+  # ubx-ui needs --legacy-peer-deps. Try ci when a lockfile exists; fall back if it is out of sync with package.json.
   - id: install
     kind: shell
     command: |
       if [ -f package-lock.json ]; then
-        npm ci --legacy-peer-deps
+        npm ci --legacy-peer-deps || npm install --legacy-peer-deps
       else
         npm install --legacy-peer-deps
       fi

@@ -195,12 +195,12 @@ run("inputsFrom inline JSON template merges with childWorkflow", () => {
     inputsFrom: '{"test_command": "{{inputs.test_command}}"}',
   };
   const ctx: MockCtx = {
-    inputs: { test_command: "npm ci && npm test", requirement: "" },
+    inputs: { test_command: "npm install --legacy-peer-deps && npm test", requirement: "" },
     steps: {},
   };
   const result = resolveChildWorkflow(step, ctx);
   assert.equal(result.workflowName, "test-fix-iteration");
-  assert.equal(result.childInputs.test_command, "npm ci && npm test");
+  assert.equal(result.childInputs.test_command, "npm install --legacy-peer-deps && npm test");
 });
 
 console.log("\nAll tests passed.");

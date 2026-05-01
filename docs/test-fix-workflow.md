@@ -32,7 +32,7 @@ The harness posts a **proposal**; click **Run**. When the workflow asks for appr
 When starting the run, provide **`test_command`** (workflow input). For this monorepo:
 
 ```text
-npm ci && npm run test
+npm install --legacy-peer-deps && npm run test
 ```
 
 Optional **`install_command`**: leave empty if `test_command` already installs (as above).
