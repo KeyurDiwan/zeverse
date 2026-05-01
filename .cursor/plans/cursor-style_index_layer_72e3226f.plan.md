@@ -4,43 +4,42 @@ overview: Add a Cursor-style local-indexed, vector-retrieval, and structured-con
 todos:
   - id: schema
     content: Add pgvector schema (repos, chunks, symbols), migration, and config/zeverse.yaml + .env.example entries
-    status: pending
+    status: completed
   - id: treesitter
     content: Implement tree-sitter chunker (server/src/index/treeSitter.ts) with TS/JS/Py/Go/MD grammars
-    status: pending
+    status: completed
   - id: merkle
     content: Implement Merkle tree (file/folder/root hashes) persisted under state/<repoId>/index/merkle.json
-    status: pending
+    status: completed
   - id: embed
     content: Implement embeddings client wrapping CloudVerse OpenAI SDK + local Xenova fallback
-    status: pending
+    status: completed
   - id: indexer
     content: "Implement indexer orchestrator: walk merkle diff, chunk, embed in batches of 64, upsert/prune"
-    status: pending
+    status: completed
   - id: watcher
     content: "Implement watcher: poll keepWorkspace repos and expose POST /api/repos/:id/reindex"
-    status: pending
+    status: completed
   - id: retrieve-step
     content: Add 'retrieve' step kind in executors.ts with hybrid ANN+BM25 search and import/caller expansion
-    status: pending
+    status: completed
   - id: feedback-loop
     content: Parse shell-step failures into structured tuples and feed them into the next retrieve in loopUntil iterations
-    status: pending
+    status: completed
   - id: rules-context
     content: Index .zeverse/rules/*.md as kind='rule' chunks so retrieval auto-attaches relevant rules
-    status: pending
+    status: completed
   - id: slack-event
     content: "Emit retrieve_finished NDJSON event and post 'Looking at: <files>' Slack milestone"
-    status: pending
+    status: completed
   - id: wire-fr-task-finisher
     content: Replace discover step in fr-task-finisher.yaml with retrieve, gated by config.index.enabled
-    status: pending
+    status: completed
   - id: eval-harness
     content: Add server/scripts/eval-retrieval.ts with a small gold-set per repo and CI hook
-    status: pending
+    status: completed
 isProject: false
 ---
-
 
 # Cursor-style code intelligence for Zeverse
 

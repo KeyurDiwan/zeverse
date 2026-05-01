@@ -1,0 +1,13 @@
+{
+  "repoId": "your-repo-id",
+  "cases": [
+    {
+      "query": "how routing works for billing",
+      "expectPathSubstringAnyOf": ["billing", "router", "route"]
+    },
+    {
+      "query": "jest test setup",
+      "expectPathSubstringAnyOf": ["jest", "test", "setup"]
+    }
+  ]
+}

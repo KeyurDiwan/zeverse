@@ -15,6 +15,28 @@ paths:
   state_dir: state
   clone_dir: repos
 
+# Code intelligence index (Postgres + pgvector). Set POSTGRES_URL and enable when ready.
+index:
+  enabled: false
+  postgres_url: ${POSTGRES_URL}
+  embedding:
+    provider: cloudverse
+    model: text-embedding-3-small
+    dim: 1536
+  chunking:
+    max_lines: 80
+    max_tokens: 2500
+  retrieval:
+    top_k: 12
+    expand: imports+callers
+    max_chars: 80000
+    hybrid_weights:
+      vector: 0.7
+      bm25: 0.3
+  watcher:
+    poll_seconds: 300
+    on_repo_add: true
+
 # Uncomment to restrict which repos, workflows, and Slack channels can trigger runs.
 # policy:
 #   allowed_repos: ["*"]

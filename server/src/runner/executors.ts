@@ -10,6 +10,10 @@ import type { Repo } from "../repos";
 import { renderTemplate, TemplateContext } from "./template";
 import { appendLog } from "./state";
 import { clampUserPromptForModel, maxLlmUserCharsFromEnv } from "./llm-prompt-budget";
+import {
+  formatStructuredFailuresFooter,
+  parseFailureLocations,
+} from "../index/shellFailures";
 
 /**
  * Base system instructions; optionally extended per workflow name (e.g. prd-analysis).
@@ -106,8 +110,12 @@ export async function executeShellStep(
 
     proc.on("close", (code) => {
       clearTimeout(timeout);
-      const output = chunks.join("");
+      let output = chunks.join("");
       appendLog(repoId, runId, `[${step.id}] Exited with code ${code}`);
+      if (code !== 0 && step.continueOnError) {
+        const locs = parseFailureLocations(output);
+        output += formatStructuredFailuresFooter(locs);
+      }
       if (code !== 0 && !step.continueOnError) {
         reject(new Error(`Command exited with code ${code}\n${output}`));
       } else {

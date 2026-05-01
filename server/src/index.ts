@@ -13,6 +13,7 @@ import { routeIntentRoutes } from "./routes/route-intent";
 import { smartReplyRoutes } from "./routes/smart-reply";
 import { harnessRoutes } from "./routes/harness";
 import { policyRoutes } from "./routes/policy";
+import { startIndexWatcher } from "./index/watcher";
 
 const app = express();
 const PORT = parseInt(process.env.ZEVERSE_SERVER_PORT ?? "3100", 10);
@@ -35,6 +36,7 @@ app.get("/health", (_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Zeverse server listening on http://localhost:${PORT}`);
+  startIndexWatcher();
 });
 
 export default app;

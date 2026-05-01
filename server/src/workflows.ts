@@ -31,7 +31,8 @@ export interface WorkflowStep {
     | "workflow"
     | "approval"
     | "wait-thread-reply"
-    | "har-analyze";
+    | "har-analyze"
+    | "retrieve";
   prompt?: string;
   command?: string;
   cwd?: string;
@@ -68,6 +69,12 @@ export interface WorkflowStep {
   harPath?: string;
   pageUrlFrom?: string;
   apiPrefix?: string;
+  retrieveTopK?: number;
+  retrieveExpand?: string;
+  retrieveMaxChars?: number;
+  retrieveFilterGlob?: string;
+  retrieveLanguages?: string;
+  retrieveFailureFrom?: string;
 }
 
 export interface Workflow {
