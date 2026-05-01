@@ -3,7 +3,7 @@ import path from "path";
 import fs from "fs";
 
 // Load .env: optional cwd file first, then monorepo root last with override
-// so `.env` at the repo root always wins (fixes empty ARCHON_* when a nested .env was loaded first).
+// so `.env` at the repo root always wins (fixes empty ZEVERSE_* when a nested .env was loaded first).
 {
   const projectEnv = path.resolve(__dirname, "../..", ".env");
   const cwdEnv = path.join(process.cwd(), ".env");
@@ -20,10 +20,10 @@ import {
   wrapWorkflowSummary,
 } from "./format-slack-message";
 
-const ARCHON_SERVER_URL = process.env.ARCHON_SERVER_URL ?? "http://localhost:3100";
-const ARCHON_UI_URL = process.env.ARCHON_UI_URL ?? "http://localhost:5173";
-const DEFAULT_REPO_ID = process.env.ARCHON_DEFAULT_REPO_ID ?? "";
-const DEFAULT_WORKFLOW = process.env.ARCHON_DEFAULT_WORKFLOW ?? "dev";
+const ZEVERSE_SERVER_URL = process.env.ZEVERSE_SERVER_URL ?? "http://localhost:3100";
+const ZEVERSE_UI_URL = process.env.ZEVERSE_UI_URL ?? "http://localhost:5173";
+const DEFAULT_REPO_ID = process.env.ZEVERSE_DEFAULT_REPO_ID ?? "";
+const DEFAULT_WORKFLOW = process.env.ZEVERSE_DEFAULT_WORKFLOW ?? "dev";
 const HUB_STATE_DIR = path.resolve(__dirname, "../../state");
 
 /** Zeverse API returns JSON; HTML means wrong URL (UI/static host) or proxy misconfiguration. */
@@ -33,7 +33,7 @@ async function zeverseResponseJson<T>(res: Response, what: string): Promise<T> {
   if (t.startsWith("<!DOCTYPE") || t.startsWith("<!doctype") || t.startsWith("<html")) {
     throw new Error(
       `Zeverse server returned a web page instead of JSON (${what}, HTTP ${res.status}). ` +
-        `Set ARCHON_SERVER_URL in .env to the API (e.g. http://127.0.0.1:3100), not the Vite UI, and ensure the server is running.`
+        `Set ZEVERSE_SERVER_URL in .env to the API (e.g. http://127.0.0.1:3100), not the Vite UI, and ensure the server is running.`
     );
   }
   if (t.length > 0 && t[0] !== "{" && t[0] !== "[") {
@@ -52,8 +52,8 @@ async function zeverseResponseJson<T>(res: Response, what: string): Promise<T> {
     ) {
       throw new Error(
         `Zeverse returned a web page, not JSON (${what}, HTTP ${res.status}). ` +
-          `Point ARCHON_SERVER_URL at the API (http://127.0.0.1:3100), not the Vite UI, ` +
-          `and unset a wrong value in the shell: env -u ARCHON_SERVER_URL npm run dev:slack`
+          `Point ZEVERSE_SERVER_URL at the API (http://127.0.0.1:3100), not the Vite UI, ` +
+          `and unset a wrong value in the shell: env -u ZEVERSE_SERVER_URL npm run dev:slack`
       );
     }
     throw new Error(
@@ -63,7 +63,7 @@ async function zeverseResponseJson<T>(res: Response, what: string): Promise<T> {
 }
 
 function zeverseBaseUrl(): string {
-  return ARCHON_SERVER_URL.replace(/\/$/, "");
+  return ZEVERSE_SERVER_URL.replace(/\/$/, "");
 }
 
 /** Warn at boot if the API URL looks wrong or returns HTML. */
@@ -71,7 +71,7 @@ async function probeZeverseOnStartup(): Promise<void> {
   const base = zeverseBaseUrl();
   if (/^https?:\/\/127\.0\.0\.1:5173|^https?:\/\/localhost:5173/.test(base)) {
     console.warn(
-      "Zeverse: ARCHON_SERVER_URL is the Vite dev URL (5173). The bot needs the API on 3100. Set ARCHON_SERVER_URL=http://127.0.0.1:3100 in .env"
+      "Zeverse: ZEVERSE_SERVER_URL is the Vite dev URL (5173). The bot needs the API on 3100. Set ZEVERSE_SERVER_URL=http://127.0.0.1:3100 in .env"
     );
   }
   try {
@@ -80,7 +80,7 @@ async function probeZeverseOnStartup(): Promise<void> {
     const t = text.trim();
     if (t.startsWith("<!DOCTYPE") || t.startsWith("<!doctype") || t.startsWith("<html")) {
       console.error(
-        "Zeverse: GET /api/repos returned HTML — ARCHON_SERVER_URL is wrong, or the shell is overriding .env. " +
+        "Zeverse: GET /api/repos returned HTML — ZEVERSE_SERVER_URL is wrong, or the shell is overriding .env. " +
           "Use the API: http://127.0.0.1:3100. Test with: npm run check:zeverse"
       );
       return;
@@ -98,13 +98,13 @@ async function probeZeverseOnStartup(): Promise<void> {
   } catch (e) {
     console.error(`Zeverse: cannot reach ${base}:`, (e as Error).message);
   }
-  const adminN = (process.env.ARCHON_REPO_ADMIN_USER_IDS ?? "")
+  const adminN = (process.env.ZEVERSE_REPO_ADMIN_USER_IDS ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean).length;
   if (adminN === 0) {
     console.warn(
-      "Zeverse: ARCHON_REPO_ADMIN_USER_IDS is empty — add-repo from Slack will be denied. " +
+      "Zeverse: ZEVERSE_REPO_ADMIN_USER_IDS is empty — add-repo from Slack will be denied. " +
         "Set it in `.env` at the repo root and restart the bot."
     );
   } else {
@@ -268,7 +268,7 @@ async function routeIntent(prompt: string, repoId?: string): Promise<RouteIntent
   const body: Record<string, string> = { prompt };
   if (repoId) body.repoId = repoId;
 
-  const res = await fetch(`${ARCHON_SERVER_URL}/api/route-intent`, {
+  const res = await fetch(`${ZEVERSE_SERVER_URL}/api/route-intent`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -301,7 +301,7 @@ interface Repo {
 
 async function listRepoIds(): Promise<Set<string>> {
   try {
-    const res = await fetch(`${ARCHON_SERVER_URL}/api/repos`);
+    const res = await fetch(`${ZEVERSE_SERVER_URL}/api/repos`);
     const data = await zeverseResponseJson<{ repos: Repo[] }>(res, "GET /api/repos");
     return new Set(data.repos.map((r) => r.id));
   } catch {
@@ -312,7 +312,7 @@ async function listRepoIds(): Promise<Set<string>> {
 async function listWorkflowNames(repoId: string): Promise<Set<string>> {
   try {
     const res = await fetch(
-      `${ARCHON_SERVER_URL}/api/workflows?repoId=${encodeURIComponent(repoId)}`
+      `${ZEVERSE_SERVER_URL}/api/workflows?repoId=${encodeURIComponent(repoId)}`
     );
     const data = await zeverseResponseJson<{ workflows: { name: string }[] }>(
       res,
@@ -326,7 +326,7 @@ async function listWorkflowNames(repoId: string): Promise<Set<string>> {
 
 async function inferRepoIdFromPrompt(prompt: string): Promise<string | null> {
   try {
-    const res = await fetch(`${ARCHON_SERVER_URL}/api/infer-repo`, {
+    const res = await fetch(`${ZEVERSE_SERVER_URL}/api/infer-repo`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt }),
@@ -343,7 +343,7 @@ async function inferRepoIdFromPrompt(prompt: string): Promise<string | null> {
 
 async function inferWorkflowFromServer(repoId: string, prompt: string): Promise<string> {
   try {
-    const res = await fetch(`${ARCHON_SERVER_URL}/api/infer-workflow`, {
+    const res = await fetch(`${ZEVERSE_SERVER_URL}/api/infer-workflow`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repoId, prompt }),
@@ -368,7 +368,7 @@ async function inferWorkflowFromServer(repoId: string, prompt: string): Promise<
 // values if the process loaded env in an unexpected order at startup).
 function getRepoAdminUserIds(): Set<string> {
   return new Set(
-    (process.env.ARCHON_REPO_ADMIN_USER_IDS ?? "")
+    (process.env.ZEVERSE_REPO_ADMIN_USER_IDS ?? "")
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean)
@@ -434,14 +434,14 @@ async function isRepoAdmin(
     return {
       allowed: false,
       reason:
-        "`ARCHON_REPO_ADMIN_USER_IDS` is not configured. " +
+        "`ZEVERSE_REPO_ADMIN_USER_IDS` is not configured. " +
         "Set it in the **repo root** `.env` as a comma-separated list of Slack user IDs, then restart the Slack bot process.",
     };
   }
   if (!admins.has(slackUser)) {
     return {
       allowed: false,
-      reason: `User <@${slackUser}> is not in \`ARCHON_REPO_ADMIN_USER_IDS\`.`,
+      reason: `User <@${slackUser}> is not in \`ZEVERSE_REPO_ADMIN_USER_IDS\`.`,
     };
   }
   if (!isDm) {
@@ -550,7 +550,7 @@ async function handleAddRepoMessage(
       `Name: \`${repo.name}\``,
       `Origin: ${repo.origin}`,
       `Default branch: \`${repo.defaultBranch}\``,
-      `<${ARCHON_UI_URL}|Open Zeverse>`,
+      `<${ZEVERSE_UI_URL}|Open Zeverse>`,
     ].join("\n"),
     blocks: [
       {
@@ -578,7 +578,7 @@ async function handleAddRepoMessage(
           {
             type: "button",
             text: { type: "plain_text", text: "Open Zeverse" },
-            url: ARCHON_UI_URL,
+            url: ZEVERSE_UI_URL,
             action_id: "open_hub_link",
           },
         ],
@@ -598,7 +598,7 @@ async function triggerWorkflow(
   prompt: string,
   inputs?: Record<string, string>
 ): Promise<RunResponse> {
-  const res = await fetch(`${ARCHON_SERVER_URL}/api/run-workflow`, {
+  const res = await fetch(`${ZEVERSE_SERVER_URL}/api/run-workflow`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ repoId, workflow: workflowName, prompt, inputs }),
@@ -623,7 +623,7 @@ interface ParseOptions {
 
 // Parse "[repo-id] [workflow] <prompt>" (order-flexible between repo / workflow).
 // When repo or workflow aren't provided as leading tokens, infers them:
-//   - repo: via LLM-based /api/infer-repo (or ARCHON_DEFAULT_REPO_ID env var)
+//   - repo: via LLM-based /api/infer-repo (or ZEVERSE_DEFAULT_REPO_ID env var)
 //   - workflow: via keyword matching against available workflows (or explicitWorkflow override)
 async function parseInvocation(rawText: string, opts: ParseOptions = {}): Promise<Invocation> {
   const text = stripMentions(rawText);
@@ -731,7 +731,7 @@ async function formatRunFailureForSlack(
   state: RunState
 ): Promise<string> {
   const failedStep = state.steps.find((s) => s.status === "failed");
-  const hubLink = `<${ARCHON_UI_URL}/?run=${runId}|View run details>`;
+  const hubLink = `<${ZEVERSE_UI_URL}/?run=${runId}|View run details>`;
 
   if (failedStep) {
     return [
@@ -750,7 +750,7 @@ async function formatRunFailureForSlack(
     });
   } else {
     lines.push(
-      "_No step-level error on record._ Common causes: **LLM init** (check `config/archon.yaml` and env), **git isolation** (uncommitted changes on the server’s repo copy), or **branch creation** failed. *Log tail* or the Zeverse run view has the line that explains it."
+      "_No step-level error on record._ Common causes: **LLM init** (check `config/zeverse.yaml` and env), **git isolation** (uncommitted changes on the server’s repo copy), or **branch creation** failed. *Log tail* or the Zeverse run view has the line that explains it."
     );
   }
 
@@ -816,7 +816,7 @@ async function pollRunAndPostResult(
     let state: RunState;
     try {
       const res = await fetch(
-        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
+        `${ZEVERSE_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
       );
       state = await zeverseResponseJson<RunState>(res, "GET /api/runs/:id");
     } catch {
@@ -877,7 +877,7 @@ async function pollRunAndPostResult(
 
     const bodyCore = sectionParts.filter(Boolean).join("\n\n");
     const bodyTrimmed = trimOutput(bodyCore);
-    const footer = `<${ARCHON_UI_URL}/?run=${runId}|View full output in Zeverse>`;
+    const footer = `<${ZEVERSE_UI_URL}/?run=${runId}|View full output in Zeverse>`;
     const text = wrapWorkflowSummary({
       title: doneTitle,
       body: bodyTrimmed,
@@ -897,7 +897,7 @@ async function pollRunAndPostResult(
     thread_ts,
     text:
       `*Workflow timed out* — the run is still going.\n` +
-      `<${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>`,
+      `<${ZEVERSE_UI_URL}/?run=${runId}|View in Zeverse>`,
   });
 }
 
@@ -913,7 +913,7 @@ function successBlocks(inv: Invocation & { runId: string }) {
           `Workflow: \`${inv.workflow}\``,
           `Prompt: ${inv.prompt}`,
           `Run ID: \`${inv.runId}\``,
-          `<${ARCHON_UI_URL}/?run=${inv.runId}|View in Zeverse>`,
+          `<${ZEVERSE_UI_URL}/?run=${inv.runId}|View in Zeverse>`,
         ].join("\n"),
       },
     },
@@ -957,7 +957,7 @@ function registerCommand(commandName: string, workflowName: string) {
           `Workflow: \`${inv.workflow}\``,
           `Prompt: ${inv.prompt}`,
           `Run ID: \`${runId}\``,
-          `<${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>`,
+          `<${ZEVERSE_UI_URL}/?run=${runId}|View in Zeverse>`,
         ].join("\n")
       );
 
@@ -973,10 +973,10 @@ function registerCommand(commandName: string, workflowName: string) {
   });
 }
 
-registerCommand("/archon-dev", "dev");
-registerCommand("/archon-fr-analyze", "fr-analyze");
-// ─── /archon-harness (smart router) ─────────────────────────────────────────
-app.command("/archon-harness", async ({ command, ack, respond, client, logger }) => {
+registerCommand("/zeverse-dev", "dev");
+registerCommand("/zeverse-fr-analyze", "fr-analyze");
+// ─── /zeverse-harness (smart router) ─────────────────────────────────────────
+app.command("/zeverse-harness", async ({ command, ack, respond, client, logger }) => {
   await ack();
 
   const rawText = command.text ?? "";
@@ -987,10 +987,10 @@ app.command("/archon-harness", async ({ command, ack, respond, client, logger })
     await respond({
       response_type: "ephemeral",
       text: [
-        `*Usage*: \`/archon-harness <anything>\``,
+        `*Usage*: \`/zeverse-harness <anything>\``,
         `Ask a question, describe a bug, request a feature, ask for a review — the router picks the right workflow.`,
-        `Example: \`/archon-harness fix the login redirect loop\``,
-        `Example: \`/archon-harness how does the billing page work?\``,
+        `Example: \`/zeverse-harness fix the login redirect loop\``,
+        `Example: \`/zeverse-harness how does the billing page work?\``,
       ].join("\n"),
     });
     return;
@@ -1009,8 +1009,8 @@ app.command("/archon-harness", async ({ command, ack, respond, client, logger })
   );
 });
 
-// ─── /archon-add-repo (register a repo from Slack) ─────────────────────────
-app.command("/archon-add-repo", async ({ command, ack, respond, client, logger }) => {
+// ─── /zeverse-add-repo (register a repo from Slack) ─────────────────────────
+app.command("/zeverse-add-repo", async ({ command, ack, respond, client, logger }) => {
   await ack();
 
   const rawText = (command.text ?? "").trim();
@@ -1018,9 +1018,9 @@ app.command("/archon-add-repo", async ({ command, ack, respond, client, logger }
     await respond({
       response_type: "ephemeral",
       text: [
-        "*Usage*: `/archon-add-repo <git-url> [name]`",
-        "Example: `/archon-add-repo https://github.com/org/my-repo.git`",
-        "Example: `/archon-add-repo https://github.com/org/my-repo.git custom-name`",
+        "*Usage*: `/zeverse-add-repo <git-url> [name]`",
+        "Example: `/zeverse-add-repo https://github.com/org/my-repo.git`",
+        "Example: `/zeverse-add-repo https://github.com/org/my-repo.git custom-name`",
       ].join("\n"),
     });
     return;
@@ -1042,7 +1042,7 @@ app.command("/archon-add-repo", async ({ command, ack, respond, client, logger }
   );
 });
 
-// ─── /archon-prd (PRD analysis) ────────────────────────────────────────────
+// ─── /zeverse-prd (PRD analysis) ────────────────────────────────────────────
 
 function isGoogleDocUrl(text: string): boolean {
   return /docs\.google\.com\/document\/d\//.test(text) ||
@@ -1266,7 +1266,7 @@ async function pollRunAndReply(
     let state: RunState;
     try {
       const res = await fetch(
-        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
+        `${ZEVERSE_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
       );
       state = await zeverseResponseJson<RunState>(res, "GET /api/runs/:id");
     } catch {
@@ -1328,7 +1328,7 @@ async function pollRunAndReply(
       "",
       commentLine,
       questionCountLine,
-      `<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View full analysis in Zeverse>`,
+      `<${docUrl}|Open PRD in Google Docs>  |  <${ZEVERSE_UI_URL}/?run=${runId}|View full analysis in Zeverse>`,
       "",
       epicFmt ? `*Epic & tasks*\n${epicFmt}` : "",
     ]
@@ -1449,28 +1449,28 @@ async function pollRunAndReply(
     thread_ts,
     text:
       `*PRD analysis timed out* — the run is still going.\n` +
-      `<${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>`,
+      `<${ZEVERSE_UI_URL}/?run=${runId}|View in Zeverse>`,
   });
 }
 
-app.command("/archon-prd", async ({ command, ack, respond, client, logger }) => {
+app.command("/zeverse-prd", async ({ command, ack, respond, client, logger }) => {
   await ack();
 
   const inv = await parseInvocation(command.text ?? "");
   inv.workflow = "prd-analysis";
 
-  // For /archon-prd the "prompt" is actually the Google Doc URL.
+  // For /zeverse-prd the "prompt" is actually the Google Doc URL.
   const docUrl = inv.prompt;
 
   if (!docUrl) {
     await respond({
       response_type: "ephemeral",
       text: [
-        `*Usage*: \`/archon-prd [<repo-id>] <doc-url>\``,
-        `• <repo-id> — optional; defaults to \`ARCHON_DEFAULT_REPO_ID\``,
+        `*Usage*: \`/zeverse-prd [<repo-id>] <doc-url>\``,
+        `• <repo-id> — optional; defaults to \`ZEVERSE_DEFAULT_REPO_ID\``,
         `• Supports Google Docs and Confluence (Server/DC) URLs`,
-        `• Example: \`/archon-prd ubx-ui https://docs.google.com/document/d/1abc.../edit\``,
-        `• Example: \`/archon-prd ubx-ui https://confluence.example.com/spaces/TEAM/pages/12345/My+PRD\``,
+        `• Example: \`/zeverse-prd ubx-ui https://docs.google.com/document/d/1abc.../edit\``,
+        `• Example: \`/zeverse-prd ubx-ui https://confluence.example.com/spaces/TEAM/pages/12345/My+PRD\``,
       ].join("\n"),
     });
     return;
@@ -1487,7 +1487,7 @@ app.command("/archon-prd", async ({ command, ack, respond, client, logger }) => 
   if (!inv.repoId) {
     await respond({
       response_type: "ephemeral",
-      text: await noRepoErrorText("/archon-prd"),
+      text: await noRepoErrorText("/zeverse-prd"),
     });
     return;
   }
@@ -1538,7 +1538,7 @@ app.command("/archon-prd", async ({ command, ack, respond, client, logger }) => 
       client,
       command.channel_id,
       `*PRD analysis started* on \`${inv.repoId}\` for <${docUrl}|Open PRD>\n` +
-        `Run: \`${runId}\` | <${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>\n` +
+        `Run: \`${runId}\` | <${ZEVERSE_UI_URL}/?run=${runId}|View in Zeverse>\n` +
         `_I'll reply in this thread when the analysis is done._` +
         rerunNote
     );
@@ -1616,7 +1616,7 @@ async function postGDocComment(
     };
     const trimmed = anchor?.trim();
     if (trimmed) payload.anchor = trimmed;
-    const res = await fetch(`${ARCHON_SERVER_URL}/api/gdoc-comment`, {
+    const res = await fetch(`${ZEVERSE_SERVER_URL}/api/gdoc-comment`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -1635,7 +1635,7 @@ async function postGDocSuggestEdits(
   edits: { anchor: string; replacement: string }[]
 ): Promise<{ applied?: number; skipped?: { anchor: string; reason: string }[]; error?: string }> {
   try {
-    const res = await fetch(`${ARCHON_SERVER_URL}/api/gdoc-suggest`, {
+    const res = await fetch(`${ZEVERSE_SERVER_URL}/api/gdoc-suggest`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ docId, edits }),
@@ -1746,7 +1746,7 @@ async function pollThreadSync(
     let state: RunState;
     try {
       const res = await fetch(
-        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(ctx.repoId)}`
+        `${ZEVERSE_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(ctx.repoId)}`
       );
       state = await zeverseResponseJson<RunState>(res, "GET /api/runs/:id");
     } catch {
@@ -1809,7 +1809,7 @@ async function pollThreadSync(
     }
     parts.push("");
     parts.push(`<${ctx.docUrl}|Open PRD in Google Docs>`);
-    parts.push(`<${ARCHON_UI_URL}/?run=${runId}|View full run in Zeverse>`);
+    parts.push(`<${ZEVERSE_UI_URL}/?run=${runId}|View full run in Zeverse>`);
 
     await client.chat.postMessage({ channel, thread_ts, text: parts.join("\n") });
     return;
@@ -1820,7 +1820,7 @@ async function pollThreadSync(
     thread_ts,
     text:
       `*PRD thread sync timed out* — the run is still going.\n` +
-      `<${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>`,
+      `<${ZEVERSE_UI_URL}/?run=${runId}|View in Zeverse>`,
   });
 }
 
@@ -1867,6 +1867,8 @@ interface HarnessRouteResult {
   answer?: string;
   question?: string;
   missing?: string[];
+  /** Populated on some error responses (e.g. HTTP 500 from harness/route). */
+  error?: string;
 }
 
 async function callHarnessRoute(
@@ -1879,7 +1881,7 @@ async function callHarnessRoute(
   if (threadContext) body.threadContext = threadContext;
   if (repoId) body.repoId = repoId;
 
-  const res = await fetch(`${ARCHON_SERVER_URL}/api/harness/route`, {
+  const res = await fetch(`${ZEVERSE_SERVER_URL}/api/harness/route`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -1909,7 +1911,7 @@ async function callHarnessExecute(
   };
   if (opts.baseBranch) body.baseBranch = opts.baseBranch;
 
-  const res = await fetch(`${ARCHON_SERVER_URL}/api/harness/execute`, {
+  const res = await fetch(`${ZEVERSE_SERVER_URL}/api/harness/execute`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -2175,7 +2177,7 @@ async function downloadAndForwardThreadReply(
 
   try {
     const res = await fetch(
-      `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(ask.runId)}/thread-reply`,
+      `${ZEVERSE_SERVER_URL}/api/runs/${encodeURIComponent(ask.runId)}/thread-reply`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2220,7 +2222,7 @@ async function downloadAndForwardThreadReply(
 // ─── Run event poller (milestones + approval detection) ─────────────────────
 
 const MILESTONE_STEPS = new Set(
-  (process.env.ARCHON_MILESTONE_STEPS ?? "plan,implement,validate,review,open-pr")
+  (process.env.ZEVERSE_MILESTONE_STEPS ?? "plan,implement,validate,review,open-pr")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean)
@@ -2258,7 +2260,7 @@ async function pollRunEvents(
     let nextOffset: number;
     try {
       const res = await fetch(
-        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}/events?repoId=${encodeURIComponent(repoId)}&offset=${offset}`
+        `${ZEVERSE_SERVER_URL}/api/runs/${encodeURIComponent(runId)}/events?repoId=${encodeURIComponent(repoId)}&offset=${offset}`
       );
       const data = await zeverseResponseJson<{ content: string; nextOffset: number }>(
         res, "GET /api/runs/:id/events"
@@ -2351,7 +2353,7 @@ async function pollRunEvents(
     // Also check if the run itself has terminated
     try {
       const runRes = await fetch(
-        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
+        `${ZEVERSE_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
       );
       const runState = await zeverseResponseJson<RunState>(runRes, "GET /api/runs/:id");
       if (runState.status === "success" || runState.status === "failed") return;
@@ -2388,7 +2390,10 @@ async function handleHarnessMessage(
   }
 
   if (route.type === "answer") {
-    const raw = route.answer ?? "I don't have an answer for that right now.";
+    let raw = route.answer ?? "I don't have an answer for that right now.";
+    if (route.error && !raw.includes(route.error)) {
+      raw = `${raw}\n\n_${route.error}_`;
+    }
     const text = wrapWorkflowSummary({
       title: "Here’s what I found",
       body: normalizeSlackMrkdwn(bulletsToNumberedLines(raw)),
@@ -2501,7 +2506,7 @@ app.action("harness_run", async ({ action, ack, body, client, logger }) => {
         thread_ts,
         text:
           `*PRD analysis started* on \`${p.repoId}\` for <${docUrl}|Open PRD>\n` +
-          `Run: \`${runId}\` | <${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>\n` +
+          `Run: \`${runId}\` | <${ZEVERSE_UI_URL}/?run=${runId}|View in Zeverse>\n` +
           `_I'll reply in this thread when the analysis is done._`,
       });
       pollRunAndReply(runId, p.repoId, channel, thread_ts, docUrl, client, logger).catch(
@@ -2605,7 +2610,7 @@ app.action("harness_pick", async ({ action, ack, body, client, logger }) => {
         thread_ts: p.threadTs,
         text:
           `*PRD analysis started* on \`${p.repoId}\` for <${docUrl}|Open PRD>\n` +
-          `Run: \`${runId}\` | <${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>\n` +
+          `Run: \`${runId}\` | <${ZEVERSE_UI_URL}/?run=${runId}|View in Zeverse>\n` +
           `_I'll reply in this thread when the analysis is done._`,
       });
       pollRunAndReply(runId, p.repoId, channel, p.threadTs, docUrl, client, logger).catch(
@@ -2674,7 +2679,7 @@ app.action("prd_confirm_pr", async ({ action, ack, body, client, logger }) => {
   if (!proposal) {
     await client.chat.postMessage({
       channel: (body as any).channel?.id,
-      text: "This PRD PR proposal has expired. Re-run `/archon-prd` to generate a new one.",
+      text: "This PRD PR proposal has expired. Re-run `/zeverse-prd` to generate a new one.",
     });
     return;
   }
@@ -2711,7 +2716,7 @@ app.action("prd_confirm_pr", async ({ action, ack, body, client, logger }) => {
   let deliverableContent: string;
   try {
     const runRes = await fetch(
-      `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(analysisRunId)}?repoId=${encodeURIComponent(repoId)}`
+      `${ZEVERSE_SERVER_URL}/api/runs/${encodeURIComponent(analysisRunId)}?repoId=${encodeURIComponent(repoId)}`
     );
     const state = await zeverseResponseJson<RunState>(runRes, "GET /api/runs/:id");
     const deliverableStep = state.steps.find((s) => s.id === "deliverable");
@@ -2726,7 +2731,7 @@ app.action("prd_confirm_pr", async ({ action, ack, body, client, logger }) => {
               type: "section",
               text: {
                 type: "mrkdwn",
-                text: "_Cannot raise a PR — the workflow's deliverable step produced no plan output. Re-run `/archon-prd` with a more detailed PRD or check the workflow logs._",
+                text: "_Cannot raise a PR — the workflow's deliverable step produced no plan output. Re-run `/zeverse-prd` with a more detailed PRD or check the workflow logs._",
               },
             },
           ],
@@ -2737,7 +2742,7 @@ app.action("prd_confirm_pr", async ({ action, ack, body, client, logger }) => {
         await client.chat.postEphemeral({
           channel,
           user: userId,
-          text: "Cannot raise a PR — the workflow's deliverable step produced no plan output. Re-run `/archon-prd` to generate a fresh analysis.",
+          text: "Cannot raise a PR — the workflow's deliverable step produced no plan output. Re-run `/zeverse-prd` to generate a fresh analysis.",
         }).catch(() => {});
       }
       return;
@@ -2800,7 +2805,7 @@ async function pollPrdRaiseAndReply(
     let state: RunState;
     try {
       const res = await fetch(
-        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
+        `${ZEVERSE_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
       );
       state = await zeverseResponseJson<RunState>(res, "GET /api/runs/:id");
     } catch {
@@ -2826,7 +2831,7 @@ async function pollPrdRaiseAndReply(
     if (prUrlMatch) parts.push(`${++raised}. PR: <${prUrlMatch[1]}|View on GitHub>`);
     parts.push("");
     parts.push(
-      `<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View raise-PR run in Zeverse>`
+      `<${docUrl}|Open PRD in Google Docs>  |  <${ZEVERSE_UI_URL}/?run=${runId}|View raise-PR run in Zeverse>`
     );
 
     await client.chat.postMessage({ channel, thread_ts, text: parts.join("\n") });
@@ -2838,7 +2843,7 @@ async function pollPrdRaiseAndReply(
     thread_ts,
     text:
       `*PRD raise-PR timed out* — the run is still going.\n` +
-      `<${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>`,
+      `<${ZEVERSE_UI_URL}/?run=${runId}|View in Zeverse>`,
   });
 }
 
@@ -2853,13 +2858,13 @@ app.action("prd_cancel_pr", async ({ action, ack, body, client }) => {
     await client.chat.update({
       channel,
       ts: messageTs,
-      text: "Cancelled — re-run `/archon-prd` if you change your mind.",
+      text: "Cancelled — re-run `/zeverse-prd` if you change your mind.",
       blocks: [
         {
           type: "section",
           text: {
             type: "mrkdwn",
-            text: "_Cancelled — re-run `/archon-prd` if you change your mind._",
+            text: "_Cancelled — re-run `/zeverse-prd` if you change your mind._",
           },
         },
       ],
@@ -2914,7 +2919,7 @@ app.action("prd_create_fr_card", async ({ action, ack, body, client, logger }) =
   if (!proposal) {
     await client.chat.postMessage({
       channel: channel,
-      text: "This proposal has expired and could not be recovered. Re-run `/archon-prd` to generate a new one.",
+      text: "This proposal has expired and could not be recovered. Re-run `/zeverse-prd` to generate a new one.",
     });
     return;
   }
@@ -2924,7 +2929,7 @@ app.action("prd_create_fr_card", async ({ action, ack, body, client, logger }) =
   let deliverableContent: string;
   try {
     const runRes = await fetch(
-      `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(analysisRunId)}?repoId=${encodeURIComponent(repoId)}`
+      `${ZEVERSE_SERVER_URL}/api/runs/${encodeURIComponent(analysisRunId)}?repoId=${encodeURIComponent(repoId)}`
     );
     const state = await zeverseResponseJson<RunState>(runRes, "GET /api/runs/:id");
     const deliverableStep = state.steps.find((s) => s.id === "deliverable");
@@ -2933,7 +2938,7 @@ app.action("prd_create_fr_card", async ({ action, ack, body, client, logger }) =
         await client.chat.postMessage({
           channel,
           thread_ts: threadTs,
-          text: "_Cannot create FR cards — the deliverable step produced no output. Re-run `/archon-prd` with a more detailed PRD._",
+          text: "_Cannot create FR cards — the deliverable step produced no output. Re-run `/zeverse-prd` with a more detailed PRD._",
         });
       }
       return;
@@ -3036,7 +3041,7 @@ app.view("prd_create_fr_card_submit", async ({ ack, view, client, logger }) => {
   let deliverableContent: string;
   try {
     const runRes = await fetch(
-      `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(analysisRunId)}?repoId=${encodeURIComponent(repoId)}`
+      `${ZEVERSE_SERVER_URL}/api/runs/${encodeURIComponent(analysisRunId)}?repoId=${encodeURIComponent(repoId)}`
     );
     const state = await zeverseResponseJson<RunState>(runRes, "GET /api/runs/:id");
     const deliverableStep = state.steps.find((s) => s.id === "deliverable");
@@ -3091,7 +3096,7 @@ app.view("prd_create_fr_card_submit", async ({ ack, view, client, logger }) => {
     thread_ts: threadTs,
     text:
       `_Creating FR cards in \`${workspace}\`..._\n` +
-      `Run: \`${frRunId}\` | <${ARCHON_UI_URL}/?run=${frRunId}|View in Zeverse>`,
+      `Run: \`${frRunId}\` | <${ZEVERSE_UI_URL}/?run=${frRunId}|View in Zeverse>`,
   });
 
   pollFrCardAndReply(frRunId, repoId, channel, threadTs, docUrl, workspace, client, logger).catch(
@@ -3151,7 +3156,7 @@ async function pollFrCardAndReply(
     let state: RunState;
     try {
       const res = await fetch(
-        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
+        `${ZEVERSE_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
       );
       state = await zeverseResponseJson<RunState>(res, "GET /api/runs/:id");
     } catch {
@@ -3194,7 +3199,7 @@ async function pollFrCardAndReply(
     }
 
     parts.push("");
-    parts.push(`<${docUrl}|Open PRD in Google Docs>  |  <${ARCHON_UI_URL}/?run=${runId}|View run in Zeverse>`);
+    parts.push(`<${docUrl}|Open PRD in Google Docs>  |  <${ZEVERSE_UI_URL}/?run=${runId}|View run in Zeverse>`);
 
     await client.chat.postMessage({ channel, thread_ts, text: parts.join("\n") });
     return;
@@ -3205,7 +3210,7 @@ async function pollFrCardAndReply(
     thread_ts,
     text:
       `*FR card creation timed out* — the run is still going.\n` +
-      `<${ARCHON_UI_URL}/?run=${runId}|View in Zeverse>`,
+      `<${ZEVERSE_UI_URL}/?run=${runId}|View in Zeverse>`,
   });
 }
 
@@ -3299,7 +3304,7 @@ app.action("approval_approve", async ({ action, ack, body, client, logger }) => 
   const messageTs = (body as any).message?.ts;
 
   try {
-    const res = await fetch(`${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}/approve`, {
+    const res = await fetch(`${ZEVERSE_SERVER_URL}/api/runs/${encodeURIComponent(runId)}/approve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ by: slackUser }),
@@ -3335,7 +3340,7 @@ app.action("approval_reject", async ({ action, ack, body, client, logger }) => {
   const messageTs = (body as any).message?.ts;
 
   try {
-    const res = await fetch(`${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}/reject`, {
+    const res = await fetch(`${ZEVERSE_SERVER_URL}/api/runs/${encodeURIComponent(runId)}/reject`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ by: slackUser }),
@@ -3378,7 +3383,7 @@ async function pollBootstrapRun(
     let state: any;
     try {
       const res = await fetch(
-        `${ARCHON_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
+        `${ZEVERSE_SERVER_URL}/api/runs/${encodeURIComponent(runId)}?repoId=${encodeURIComponent(repoId)}`
       );
       state = await zeverseResponseJson<any>(res, "GET /api/runs/:id");
     } catch {
@@ -3416,7 +3421,7 @@ async function pollBootstrapRun(
   await client.chat.postMessage({
     channel,
     thread_ts,
-    text: `Rules bootstrap is still running after ${(maxAttempts * intervalMs) / 1000}s. Check <${ARCHON_UI_URL}|Zeverse> for status.`,
+    text: `Rules bootstrap is still running after ${(maxAttempts * intervalMs) / 1000}s. Check <${ZEVERSE_UI_URL}|Zeverse> for status.`,
   });
 }
 
@@ -3467,7 +3472,7 @@ app.action("bootstrap_rules", async ({ action, ack, body, client, logger }) => {
     await client.chat.postMessage({
       channel,
       thread_ts,
-      text: `Rules bootstrap started (run \`${data.runId}\`). Follow progress in <${ARCHON_UI_URL}|Zeverse>.`,
+      text: `Rules bootstrap started (run \`${data.runId}\`). Follow progress in <${ZEVERSE_UI_URL}|Zeverse>.`,
     });
 
     pollBootstrapRun(data.runId!, repoId, channel, thread_ts, client, logger).catch(
@@ -3594,7 +3599,7 @@ async function matchReplyToQuery(
   ].join("\n");
 
   try {
-    const res = await fetch(`${ARCHON_SERVER_URL}/api/run-workflow`, {
+    const res = await fetch(`${ZEVERSE_SERVER_URL}/api/run-workflow`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -3657,7 +3662,7 @@ async function postGDocReply(
   body: string
 ): Promise<{ replyId?: string; error?: string }> {
   try {
-    const res = await fetch(`${ARCHON_SERVER_URL}/api/gdoc-reply`, {
+    const res = await fetch(`${ZEVERSE_SERVER_URL}/api/gdoc-reply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ docId, commentId, body }),

@@ -22,7 +22,7 @@ inferRoutes.post("/infer-workflow", (req: Request, res: Response) => {
     const repo = requireRepo(repoId);
     const workflows = loadWorkflows(repo);
     const names = new Set(workflows.map((w) => w.name));
-    const defaultWorkflow = process.env.ARCHON_DEFAULT_WORKFLOW ?? "dev";
+    const defaultWorkflow = process.env.ZEVERSE_DEFAULT_WORKFLOW ?? "dev";
     const keywordMatch = matchWorkflowKeyword(prompt, names);
     const workflow = inferWorkflowFromPrompt(prompt, names, defaultWorkflow);
 

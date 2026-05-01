@@ -15,7 +15,13 @@ export interface WorkflowSummary {
   steps: { id: string; kind: string }[];
 }
 
-export type RunStatus = "queued" | "running" | "success" | "failed";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "success"
+  | "failed"
+  | "awaiting_approval"
+  | "awaiting_thread_reply";
 
 export interface StepResult {
   id: string;
@@ -114,6 +120,12 @@ export async function fetchRun(repoId: string, runId: string): Promise<RunState>
   const res = await fetch(
     `${BASE}/runs/${runId}?repoId=${encodeURIComponent(repoId)}`
   );
+  return json<RunState>(res);
+}
+
+/** Load run state when you only know runId (server resolves repo from disk / active runs). */
+export async function fetchRunById(runId: string): Promise<RunState> {
+  const res = await fetch(`${BASE}/runs/${encodeURIComponent(runId)}`);
   return json<RunState>(res);
 }
 

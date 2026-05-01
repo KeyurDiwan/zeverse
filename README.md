@@ -4,7 +4,7 @@ Multi-repo AI workflow runner. One control plane (server + UI + Slack bot) that 
 
 ```
 zeverse/
-├── config/archon.yaml   # Global LLM + runner config
+├── config/zeverse.yaml   # Global LLM + runner config
 ├── repos.json           # Registry of imported repos
 ├── server/              # Express API + workflow runner (port 3100)
 ├── ui/                  # Vite + React dashboard (port 5173)
@@ -13,7 +13,7 @@ zeverse/
 └── repos/               # Default workspace for cloned repos
 ```
 
-Workflows and commands live **inside each target repo** under `.archon/workflows/` and `.archon/commands/`. Zeverse itself is project-agnostic.
+Workflows and commands live **inside each target repo** under `.zeverse/workflows/` and `.zeverse/commands/`. Zeverse itself is project-agnostic.
 
 ## Prerequisites
 
@@ -27,7 +27,7 @@ Workflows and commands live **inside each target repo** under `.archon/workflows
 
 ```bash
 cp .env.example .env
-# Edit .env with your CloudVerse API key. Variable names keep the ARCHON_* prefix (historic).
+# Edit .env with your CloudVerse API key. Hub settings use the ZEVERSE_* variables (see `.env.example`).
 
 npm run install:all
 
@@ -39,7 +39,7 @@ npm run dev:slack        # optional, only if Slack creds are set
 
 Open http://localhost:5173 and click **+ Import** to register your first repo.
 
-The checkout directory and npm root package name are **`zeverse`** (not `archon-hub`). Rename the repo on GitHub under **Settings → General → Repository name** if needed, point `origin` at the new URL, and rename any local clone with `mv archon-hub zeverse`.
+The checkout directory and npm root package name are **`zeverse`**. Rename the repo on GitHub under **Settings → General → Repository name** if needed, point `origin` at the new URL, and use a local folder name that matches (rename your clone if needed).
 
 ## Importing repos
 
@@ -78,7 +78,7 @@ field, and writes the new format. A `.bak` backup is created automatically.
 ### How runs work (remote-first)
 
 1. **Ephemeral clone** (default): `git clone --depth=50 --branch <base> <origin>`
-   into `state/<repoId>/runs/<runId>/work/`. A run branch `archon/<wf>/<id>` is
+   into `state/<repoId>/runs/<runId>/work/`. A run branch `zeverse/<wf>/<id>` is
    created on top.
 2. **Managed workspace** (`keepWorkspace: true` in the workflow YAML): a persistent
    clone under `repos/<id>/` is fetched and hard-reset before each run. Only one
@@ -100,7 +100,7 @@ Defaults to the repo's `defaultBranch` when omitted.
 
 ### Bootstrapping rules & skills
 
-After importing a repo you can auto-generate `.archon/rules/*.md` files — these
+After importing a repo you can auto-generate `.zeverse/rules/*.md` files — these
 give the LLM context about the repo's tech stack, conventions, testing patterns,
 and domain for every future workflow run.
 
@@ -121,11 +121,11 @@ curl -X POST http://localhost:3100/api/repos/<repo-id>/bootstrap-rules
 The run clones the repo, fingerprints the codebase (directory tree, config
 files, CI setup), sends the fingerprint to the LLM, and writes one `.md` file
 per concern (e.g. `tech-stack.md`, `conventions.md`, `testing.md`). The PR
-branch is named `archon/bootstrap-rules/<runId>`.
+branch is named `zeverse/bootstrap-rules/<runId>`.
 
 ## Adding workflows to a target repo
 
-Inside the target repo, create `.archon/workflows/<name>.yaml`:
+Inside the target repo, create `.zeverse/workflows/<name>.yaml`:
 
 ```yaml
 name: dev
@@ -198,7 +198,7 @@ run; the step loops until it renders truthy) with `maxIterations` (default 10).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `isolation` | `"branch"` \| `"none"` | `"branch"` | Per-run git branch isolation. `"branch"` creates `archon/<wf>/<runId>`, commits, pushes, and opens a PR. |
+| `isolation` | `"branch"` \| `"none"` | `"branch"` | Per-run git branch isolation. `"branch"` creates `zeverse/<wf>/<runId>`, commits, pushes, and opens a PR. |
 | `keepWorkspace` | `boolean` | `false` | When `true`, reuse a persistent managed clone instead of an ephemeral per-run clone. Faster for large repos but serialises runs. |
 | `gates` | `string[]` | `[]` | Step ids that must be `"success"` for the run to pass. Checked after all steps finish. |
 | `onGateFail` | `{ childWorkflow: string }` | — | Dispatch this child workflow when gates fail (e.g. a "fix" workflow). |
@@ -231,7 +231,7 @@ Templating uses `{{inputs.<id>}}` and `{{steps.<id>.output}}`.
 | POST   | `/api/repos`                  | Register a repo (`{url}`, optional `{name}`) |
 | DELETE | `/api/repos/:id`              | Remove a repo from the registry         |
 | POST   | `/api/repos/:id/refresh-workflows` | Force-refresh the cached workflows for a repo |
-| POST   | `/api/repos/:id/bootstrap-rules` | Analyse codebase and open a PR with `.archon/rules/*.md` files |
+| POST   | `/api/repos/:id/bootstrap-rules` | Analyse codebase and open a PR with `.zeverse/rules/*.md` files |
 | GET    | `/api/workflows?repoId=`      | List workflows for a repo               |
 | POST   | `/api/run-workflow`           | Start a run (`{repoId, workflow, prompt, baseBranch?}`) |
 | GET    | `/api/runs/:id?repoId=`       | Get run state                           |
@@ -254,13 +254,13 @@ Templating uses `{{inputs.<id>}}` and `{{steps.<id>.output}}`.
 ## Policy & audit
 
 Optionally restrict which repos, workflows, and Slack channels can trigger runs
-by adding a `policy:` block to `config/archon.yaml`:
+by adding a `policy:` block to `config/zeverse.yaml`:
 
 ```yaml
 policy:
   allowed_repos: ["ubx-ui", "freshid-ui-v2"]
   allowed_workflows: ["dev", "fix-bug", "test-write"]
-  allowed_slack_channels: ["C-TEAM-ARCHON"]
+  allowed_slack_channels: ["C-TEAM-ZEVERSE"]
 ```
 
 Use `["*"]` (the default) to allow anything. Violations return HTTP 403 with
@@ -277,7 +277,7 @@ Events include `step_started`, `step_finished`, `step_retry`, `step_skipped`,
 `awaiting_approval`, `approved`, `gates_failed`, and `run_finished`.
 
 The Slack bot polls `/api/runs/:id/events` and posts in-thread milestone messages
-for steps listed in `runner.milestone_steps` (configurable in `config/archon.yaml`).
+for steps listed in `runner.milestone_steps` (configurable in `config/zeverse.yaml`).
 
 ## Slack bot
 
@@ -295,19 +295,19 @@ User message (slash / @mention / DM)
   → POST /api/harness/execute → startRun → poll → result in thread
 ```
 
-Each target repo owns its routing logic via `.archon/workflows/harness.yaml`,
+Each target repo owns its routing logic via `.zeverse/workflows/harness.yaml`,
 which contains an LLM routing step and a `workflow` dispatch step. The hub falls
 back to server-side LLM routing when no harness.yaml exists.
 
 ### 1. Slash commands
 
 ```
-/archon-dev     [<repo-id>] <your requirement>
-/archon-harness [<repo-id>] <anything>
-/archon-prd     [<repo-id>] <google-doc-url>
+/zeverse-dev     [<repo-id>] <your requirement>
+/zeverse-harness [<repo-id>] <anything>
+/zeverse-prd     [<repo-id>] <google-doc-url>
 ```
 
-`/archon-harness` is the **universal command** — it accepts any natural-language
+`/zeverse-harness` is the **universal command** — it accepts any natural-language
 prompt and an LLM-based intent router picks the best workflow automatically:
 
 | Prompt style | Routed to |
@@ -339,7 +339,7 @@ and a PR link (when available).
 re-routes the new prompt with full thread history as context — so "now fix it"
 works after a diagnosis.
 
-`/archon-prd` reads the PRD from the linked Google Doc, analyses it against the
+`/zeverse-prd` reads the PRD from the linked Google Doc, analyses it against the
 repo codebase, posts open queries as comments on the doc, and replies in-thread
 with a finalised/not-finalised verdict plus a summary of the top open questions.
 
@@ -352,7 +352,7 @@ After every analysis the bot also:
   produced no output — clicking Raise PR in that case shows an error).
 
 **Severity field in the workflow prompt:** The target repo's
-`.archon/workflows/prd-analysis.yaml` `analyse` step must emit a `severity`
+`.zeverse/workflows/prd-analysis.yaml` `analyse` step must emit a `severity`
 field per query (`"critical"` or `"nice-to-have"`). Mark a question critical
 only when the PRD cannot be implemented without an answer (e.g. missing API
 contract, undefined data shape, conflicting requirement). Example:
@@ -386,7 +386,7 @@ ambiguous requests, and shows confirm buttons before running workflows:
 
 ### 2a. @mentions inside PRD threads
 
-When the bot is @mentioned inside a Slack thread that was started by `/archon-prd`,
+When the bot is @mentioned inside a Slack thread that was started by `/zeverse-prd`,
 it recognises special commands that sync the thread discussion back to the Google Doc:
 
 ```
@@ -429,13 +429,13 @@ In your Slack app manifest / settings:
   `im:read`, `im:write`, `users:read`, `channels:history`, `groups:history`
 - **Event Subscriptions**: subscribe the bot to `app_mention` and `message.im`
 - **Interactivity**: enable Interactivity & Shortcuts (for the confirm buttons)
-- **Slash Commands**: `/archon-dev`, `/archon-harness`, `/archon-prd`, `/archon-add-repo`
-  - `/archon-harness` uses the unified harness router (`/api/harness/route`)
-  - `/archon-add-repo` registers a new repo (admin-only, see below)
+- **Slash Commands**: `/zeverse-dev`, `/zeverse-harness`, `/zeverse-prd`, `/zeverse-add-repo`
+  - `/zeverse-harness` uses the unified harness router (`/api/harness/route`)
+  - `/zeverse-add-repo` registers a new repo (admin-only, see below)
 - **Socket Mode**: enabled (set `SLACK_APP_TOKEN` with scope `connections:write`)
 
 Defaults:
-- **Repo**: if `<repo-id>` is omitted the bot first checks `ARCHON_DEFAULT_REPO_ID`.
+- **Repo**: if `<repo-id>` is omitted the bot first checks `ZEVERSE_DEFAULT_REPO_ID`.
   If that is unset, it asks the LLM to pick the best-matching repo from the
   registry (or auto-selects when only one repo exists).
 - **Workflow**: determined automatically by the harness router (keyword matching
@@ -448,7 +448,7 @@ UI. Three surfaces are supported:
 
 ```
 @ZeverseBot add-repo <git-url> [optional-name]
-/archon-add-repo <git-url> [optional-name]
+/zeverse-add-repo <git-url> [optional-name]
 DM the bot: add-repo <git-url> [optional-name]
 ```
 
@@ -457,22 +457,22 @@ Examples:
 ```
 @ZeverseBot add-repo https://github.com/freshdesk/ubx-ui.git
 @ZeverseBot add-repo https://github.com/freshdesk/ubx-ui.git my-custom-name
-/archon-add-repo https://github.com/freshdesk/freshid-ui-v2.git
+/zeverse-add-repo https://github.com/freshdesk/freshid-ui-v2.git
 ```
 
 **Authorization:** adding repos is gated by two independent checks:
 
-1. **User allowlist** — `ARCHON_REPO_ADMIN_USER_IDS` in the **Zeverse repo root**
+1. **User allowlist** — `ZEVERSE_REPO_ADMIN_USER_IDS` in the **Zeverse repo root**
    `.env` (same file as `SLACK_BOT_TOKEN` — not a separate `slack-bot/.env` unless
    you duplicate the line there). Comma-separated Slack user IDs. If empty, no
    one can add repos from Slack. Restart the bot after changing.
 2. **Channel allowlist** — `policy.allowed_slack_channels` in
-   `config/archon.yaml` (default `["*"]` = any channel). DMs are exempt from
+   `config/zeverse.yaml` (default `["*"]` = any channel). DMs are exempt from
    the channel check.
 
 Both checks must pass for the operation to proceed.
 
-### Google Docs integration (for `/archon-prd`)
+### Google Docs integration (for `/zeverse-prd`)
 
 1. Create a Google Cloud service account and download its JSON key.
 2. Place the JSON at `config/gcp-service-account.json` (gitignored) or set

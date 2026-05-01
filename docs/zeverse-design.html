@@ -258,7 +258,7 @@
         <strong>Zeverse</strong> is a project-agnostic <em>control plane</em>: an Express API and workflow runner (<code>server/</code>),
         a Vite + React dashboard (<code>ui/</code>), and an optional Slack Bolt bot (<code>slack-bot/</code>) that share one pipeline.
         Business logic for <em>what</em> to automate lives in each <strong>target repository</strong> under
-        <code>.archon/workflows/</code> and <code>.archon/commands/</code> — not inside the Zeverse repo itself.
+        <code>.zeverse/workflows/</code> and <code>.zeverse/commands/</code> — not inside the Zeverse repo itself.
       </p>
       <p>
         Runs create an isolated git workspace (usually ephemeral), execute YAML-defined steps (LLM, shell, patches, integrations),
@@ -276,7 +276,7 @@
         Users and automations reach the <strong>API</strong> on port 3100 (configurable). The server loads workflow definitions from the
         registered repo’s checkout or cache, acquires a <strong>session</strong> (clone path + branch), runs step executors, and writes
         state under <code>state/&lt;repoId&gt;/runs/</code>. External systems: git remote (GitHub), LLM (CloudVerse / config in
-        <code>config/archon.yaml</code>), optional Google Docs, Freshrelease, Confluence — depending on workflow steps and env vars.
+        <code>config/zeverse.yaml</code>), optional Google Docs, Freshrelease, Confluence — depending on workflow steps and env vars.
       </p>
 
       <figure class="diagram" aria-label="Architecture diagram">
@@ -474,7 +474,7 @@
           <text class="seq-msg-sm" x="328" y="244">llm · shell · edit · gates · …</text>
           <text class="seq-msg-sm" x="328" y="258">logs → state/… · events NDJSON</text>
           <line x1="448" y1="292" x2="656" y2="292" stroke="#34d399" stroke-width="1.6" marker-end="url(#exSolid)"/>
-          <text class="seq-msg" x="548" y="288" text-anchor="middle">push archon/… branch · open PR</text>
+          <text class="seq-msg" x="548" y="288" text-anchor="middle">push zeverse/… branch · open PR</text>
           <line x1="72" y1="328" x2="260" y2="328" stroke="#34d399" stroke-width="1.6" marker-end="url(#exSolid)"/>
           <text class="seq-msg" x="160" y="324" text-anchor="middle">GET /api/runs/:id/events (poll)</text>
           <line x1="260" y1="352" x2="72" y2="352" stroke="#9aa3b2" stroke-dasharray="6 5" stroke-width="1.4" marker-end="url(#exDash)"/>
@@ -561,7 +561,7 @@
         </dd>
         <dt>Faster onboarding after import</dt>
         <dd>
-          Running <code>bootstrap-rules</code> fingerprints the tree (layouts, configs, CI hints) and opens a PR that seeds <code>.archon/rules/*.md</code>
+          Running <code>bootstrap-rules</code> fingerprints the tree (layouts, configs, CI hints) and opens a PR that seeds <code>.zeverse/rules/*.md</code>
           — teams start from structured commentary instead of blank prompts.
         </dd>
         <dt>Scoped blast radius</dt>
@@ -573,7 +573,7 @@
       <h3>4.2 Where rules are loaded from (implementation)</h3>
       <p>The server merges text from the workflow checkout/cache in this order (see <code>loadRepoRules</code>):</p>
       <ol>
-        <li><code>.archon/rules/*.md</code> — Primary Archon/Zeverse convention files (often produced or edited after bootstrap).</li>
+        <li><code>.zeverse/rules/*.md</code> — Primary Zeverse convention files (often produced or edited after bootstrap).</li>
         <li><code>.cursorrules</code> — Single-file Cursor rule bundle at repo root (truncated if extremely large).</li>
         <li><code>.cursor/rules/*.md</code> — Cursor-style modular rules.</li>
       </ol>
@@ -584,12 +584,12 @@
       <h3>4.3 Bootstrap workflow (<code>bootstrap-rules</code>)</h3>
       <p>
         Trigger via UI “+ Rules”, Slack button after <code>add-repo</code>, or <code>POST /api/repos/:id/bootstrap-rules</code>.
-        A dedicated workflow clones the repo, fingerprints structure, asks an LLM to draft Markdown files under <code>.archon/rules/</code> (for example tech stack, conventions, testing),
-        applies them into the workspace, then follows the normal branch isolation path — branch name pattern <code>archon/bootstrap-rules/&lt;runId&gt;</code> — resulting in a GitHub PR teams review like any other change.
+        A dedicated workflow clones the repo, fingerprints structure, asks an LLM to draft Markdown files under <code>.zeverse/rules/</code> (for example tech stack, conventions, testing),
+        applies them into the workspace, then follows the normal branch isolation path — branch name pattern <code>zeverse/bootstrap-rules/&lt;runId&gt;</code> — resulting in a GitHub PR teams review like any other change.
       </p>
 
       <figure class="diagram seq-diagram" aria-label="Bootstrap rules sequence">
-        <figcaption>Figure 4a — Sequence: <code>bootstrap-rules</code> run — fingerprint repo → LLM drafts <code>.archon/rules/*.md</code> → apply → push branch → open PR (same isolation mechanics as other workflows).</figcaption>
+        <figcaption>Figure 4a — Sequence: <code>bootstrap-rules</code> run — fingerprint repo → LLM drafts <code>.zeverse/rules/*.md</code> → apply → push branch → open PR (same isolation mechanics as other workflows).</figcaption>
         <svg class="seq-canvas" viewBox="0 0 760 360" xmlns="http://www.w3.org/2000/svg" role="img">
           <defs>
             <marker id="bsSolid" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#34d399"/></marker>
@@ -616,8 +616,8 @@
           <line x1="456" y1="162" x2="272" y2="162" stroke="#9aa3b2" stroke-dasharray="6 5" stroke-width="1.4" marker-end="url(#bsDash)"/>
           <text class="seq-msg" x="360" y="158" text-anchor="middle">Markdown blocks</text>
           <rect class="seq-frame" x="176" y="176" width="192" height="44"/>
-          <text class="seq-msg-sm" x="184" y="192">apply step writes .archon/rules/</text>
-          <text class="seq-msg-sm" x="184" y="208">review · commit on archon/bootstrap-rules/…</text>
+          <text class="seq-msg-sm" x="184" y="192">apply step writes .zeverse/rules/</text>
+          <text class="seq-msg-sm" x="184" y="208">review · commit on zeverse/bootstrap-rules/…</text>
           <line x1="272" y1="246" x2="628" y2="246" stroke="#34d399" stroke-width="1.6" marker-end="url(#bsSolid)"/>
           <text class="seq-msg" x="448" y="242" text-anchor="middle">push branch · REST/gh → PR URL</text>
           <text class="seq-note" x="272" y="288" text-anchor="middle">Same executor pipeline as feature workflows</text>
@@ -627,13 +627,13 @@
       <h3>4.4 Relationship to workflow YAML prompts</h3>
       <p>
         Individual workflow steps define their own LLM prompts in YAML; authors often embed repo-specific instructions there or rely on shell steps to read files from the workspace.
-        Keeping durable conventions in <code>.archon/rules/</code> avoids duplicating long boilerplate across every workflow while remaining merge-reviewed like application docs.
+        Keeping durable conventions in <code>.zeverse/rules/</code> avoids duplicating long boilerplate across every workflow while remaining merge-reviewed like application docs.
       </p>
 
       <h3>4.5 “Skills” in naming</h3>
       <p>
-        Product docs sometimes pair “rules &amp; skills” with bootstrap — practically this means curated markdown capability/context packs plus executable workflows/commands under <code>.archon/</code>
-        shipped by that repo. Zeverse executes whatever workflows exist in <code>.archon/workflows/</code>; naming aligns with Cursor terminology for familiarity across tooling.
+        Product docs sometimes pair “rules &amp; skills” with bootstrap — practically this means curated markdown capability/context packs plus executable workflows/commands under <code>.zeverse/</code>
+        shipped by that repo. Zeverse executes whatever workflows exist in <code>.zeverse/workflows/</code>; naming aligns with Cursor terminology for familiarity across tooling.
       </p>
     </section>
 
@@ -646,7 +646,7 @@
       <ul>
         <li><strong>UI</strong> — Import flow in the dashboard.</li>
         <li><strong>HTTP</strong> — <code>POST /api/repos</code> with URL and optional name.</li>
-        <li><strong>Slack</strong> — <code>add-repo</code> (gated by <code>ARCHON_REPO_ADMIN_USER_IDS</code> and channel policy).</li>
+        <li><strong>Slack</strong> — <code>add-repo</code> (gated by <code>ZEVERSE_REPO_ADMIN_USER_IDS</code> and channel policy).</li>
       </ul>
       <p>
         Zeverse stores the remote URL; it does not require a permanent local clone at import time. Each run typically creates an
@@ -657,14 +657,14 @@
       <h3>5.5 Onboarding checklist</h3>
       <ol>
         <li>Import repo → verify row appears in <code>repos.json</code> with correct <code>defaultBranch</code>.</li>
-        <li>Add at least one workflow YAML under <code>.archon/workflows/</code>; refresh cache via UI or <code>POST /api/repos/:id/refresh-workflows</code> when iterating locally.</li>
+        <li>Add at least one workflow YAML under <code>.zeverse/workflows/</code>; refresh cache via UI or <code>POST /api/repos/:id/refresh-workflows</code> when iterating locally.</li>
         <li>Optional: add <code>harness.yaml</code> with <code>catalog</code>/<code>route</code> for custom routing prompts.</li>
-        <li>Optional: run <a href="#rules-skills">bootstrap-rules</a> to seed <code>.archon/rules/</code>, or maintain <code>.cursorrules</code> / <code>.cursor/rules/</code>.</li>
+        <li>Optional: run <a href="#rules-skills">bootstrap-rules</a> to seed <code>.zeverse/rules/</code>, or maintain <code>.cursorrules</code> / <code>.cursor/rules/</code>.</li>
         <li>Configure secrets at hub root (<code>GITHUB_TOKEN</code>, integration tokens) so pushes and PR creation succeed.</li>
         <li>Smoke-test: direct run via UI or <code>/api/run-workflow</code>, then Slack harness proposal → execute.</li>
       </ol>
       <h3>5.2 Add workflows and optional harness</h3>
-      <p>In the target repo, create YAML files under <code>.archon/workflows/</code>. Example shape:</p>
+      <p>In the target repo, create YAML files under <code>.zeverse/workflows/</code>. Example shape:</p>
       <pre><code>name: dev
 description: Plan, implement, validate, review, PR.
 inputs:
@@ -678,14 +678,14 @@ steps:
       Break this requirement into ordered tasks:
       {{inputs.requirement}}</code></pre>
       <p>
-        Optionally add <code>.archon/workflows/harness.yaml</code> with steps such as <code>catalog</code> and <code>route</code>.
+        Optionally add <code>.zeverse/workflows/harness.yaml</code> with steps such as <code>catalog</code> and <code>route</code>.
         When present, <code>POST /api/harness/route</code> dry-runs those steps via <code>runSingleStep</code> to pick a workflow.
         If missing or parsing fails, the server falls back to <strong>keyword routing</strong> and then <strong>server-side LLM routing</strong>
-        using the workflow list and <code>.archon/rules</code> context.
+        using the workflow list and <code>.zeverse/rules</code> context.
       </p>
       <h3>5.3 Bootstrap rules (optional)</h3>
       <p>
-        <code>POST /api/repos/:id/bootstrap-rules</code> fingerprints the codebase and opens a PR adding <code>.archon/rules/*.md</code>
+        <code>POST /api/repos/:id/bootstrap-rules</code> fingerprints the codebase and opens a PR adding <code>.zeverse/rules/*.md</code>
         so future runs get consistent repo context.
       </p>
       <h3>5.4 Branch targeting</h3>
@@ -717,7 +717,7 @@ steps:
           <tr><th>Field</th><th>Meaning</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>isolation</code></td><td><code>branch</code> (default) creates <code>archon/&lt;wf&gt;/&lt;runId&gt;</code>, commits, pushes, opens PR; <code>none</code> skips that pattern.</td></tr>
+          <tr><td><code>isolation</code></td><td><code>branch</code> (default) creates <code>zeverse/&lt;wf&gt;/&lt;runId&gt;</code>, commits, pushes, opens PR; <code>none</code> skips that pattern.</td></tr>
           <tr><td><code>keepWorkspace</code></td><td>Persistent clone under <code>repos/&lt;id&gt;/</code> vs ephemeral per-run workspace.</td></tr>
           <tr><td><code>gates</code></td><td>Step ids that must end in <code>success</code> for the run to pass.</td></tr>
           <tr><td><code>onGateFail</code></td><td>Optional child workflow dispatch when gates fail.</td></tr>
@@ -794,7 +794,7 @@ steps:
 
       <h3>7.2 Git outcomes</h3>
       <p>
-        When <code>isolation: branch</code>, successful edits commit on <code>archon/&lt;workflow&gt;/&lt;runId&gt;</code> (pattern may vary by implementation details),
+        When <code>isolation: branch</code>, successful edits commit on <code>zeverse/&lt;workflow&gt;/&lt;runId&gt;</code> (pattern may vary by implementation details),
         push to <code>origin</code>, then open or update a pull request via <code>gh</code> or GitHub REST when tokens permit.
         Empty runs may still produce empty commits depending on workflow — callers rely on logs for truth.
       </p>
@@ -885,7 +885,7 @@ steps:
       </p>
 
       <figure class="diagram seq-diagram" aria-label="Slack ingress sequence">
-        <figcaption>Figure 8a — Sequence: Slack user → Bolt (Socket Mode) → <code>ARCHON_SERVER_URL</code> harness APIs (same JSON contracts as curl).</figcaption>
+        <figcaption>Figure 8a — Sequence: Slack user → Bolt (Socket Mode) → <code>ZEVERSE_SERVER_URL</code> harness APIs (same JSON contracts as curl).</figcaption>
         <svg class="seq-canvas" viewBox="0 0 780 340" xmlns="http://www.w3.org/2000/svg" role="img">
           <defs>
             <marker id="slSolid" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#34d399"/></marker>
@@ -927,7 +927,7 @@ steps:
         <li><strong>Repo</strong> — Use <code>repoId</code> from the request if provided; otherwise infer via LLM over the registry (or clarify if none/ambiguous).</li>
         <li><strong>Keyword shortcut</strong> — If <code>matchWorkflowKeyword</code> matches, return <code>type: proposal</code> with high confidence.</li>
         <li><strong>Per-repo harness</strong> — If a workflow named <code>harness</code> exists and has a <code>route</code> step, optionally run <code>catalog</code>, then <code>route</code> via <code>runSingleStep</code>. Parse JSON from the route output; if workflow is known and confidence ≥ <strong>0.6</strong>, return <code>proposal</code>; else <code>answer</code>. On failure, fall through.</li>
-        <li><strong>Server LLM fallback</strong> — Build a catalog of non-harness workflows, merge <a href="#rules-skills">repo rules text</a> (<code>loadRepoRules</code>: <code>.archon/rules</code>, <code>.cursorrules</code>, <code>.cursor/rules</code>) when non-empty, and ask the LLM for JSON: <code>workflow</code>, <code>inputs</code>, <code>alternatives</code>, <code>confidence</code>, <code>reason</code>. Same 0.6 threshold; unknown workflow or low confidence yields <code>answer</code> with explanatory text.</li>
+        <li><strong>Server LLM fallback</strong> — Build a catalog of non-harness workflows, merge <a href="#rules-skills">repo rules text</a> (<code>loadRepoRules</code>: <code>.zeverse/rules</code>, <code>.cursorrules</code>, <code>.cursor/rules</code>) when non-empty, and ask the LLM for JSON: <code>workflow</code>, <code>inputs</code>, <code>alternatives</code>, <code>confidence</code>, <code>reason</code>. Same 0.6 threshold; unknown workflow or low confidence yields <code>answer</code> with explanatory text.</li>
       </ol>
       <p>Response <code>type</code> is one of:</p>
       <ul>
@@ -956,7 +956,7 @@ steps:
 
       <h3>8.3 Slack surfaces (expanded)</h3>
       <ul>
-        <li><strong>Slash commands</strong> — <code>/archon-harness</code> is the universal router; <code>/archon-dev</code>, <code>/archon-prd</code>, <code>/archon-add-repo</code> specialize common flows.</li>
+        <li><strong>Slash commands</strong> — <code>/zeverse-harness</code> is the universal router; <code>/zeverse-dev</code>, <code>/zeverse-prd</code>, <code>/zeverse-add-repo</code> specialize common flows.</li>
         <li><strong>@mentions</strong> — Invite the bot to a channel, then mention it; behaviour matches harness routing + confirmation.</li>
         <li><strong>DMs</strong> — Same behaviour without requiring a mention.</li>
         <li><strong>Thread context</strong> — Follow-ups send earlier turns as <code>threadContext</code> so “now fix it” resolves against prior diagnosis.</li>
@@ -992,7 +992,7 @@ POST /api/harness/execute
 
       <h3>9.1 Policy enforcement</h3>
       <p>
-        Operators may tighten blast radius without code changes by uncommenting / editing <code>policy:</code> inside <code>config/archon.yaml</code>:
+        Operators may tighten blast radius without code changes by uncommenting / editing <code>policy:</code> inside <code>config/zeverse.yaml</code>:
         restrict which <code>repoId</code> values, workflow names, or Slack channel ids may invoke runs.
         Defaults commonly allow all (<code>["*"]</code>). Checks run inside <code>/api/harness/execute</code> today (direct <code>/api/run-workflow</code> does not call the same gate — secure those paths separately if exposed).
         Violations surface as HTTP <strong>403</strong> with a machine-readable <code>reason</code>.
@@ -1042,8 +1042,8 @@ POST /api/harness/execute
       <h3>10.2 Environment (from <code>.env.example</code>)</h3>
       <p>
         Copy <code>.env.example</code> to <code>.env</code> at the repo root. Key variables: <code>CLOUDVERSE_API_KEY</code>,
-        <code>CLOUDVERSE_BASE_URL</code>, <code>ARCHON_SERVER_URL</code> (API for the bot — port 3100, not the Vite UI),
-        <code>ARCHON_UI_URL</code>, Slack tokens, <code>ARCHON_DEFAULT_REPO_ID</code>, <code>ARCHON_REPO_ADMIN_USER_IDS</code>,
+        <code>CLOUDVERSE_BASE_URL</code>, <code>ZEVERSE_SERVER_URL</code> (API for the bot — port 3100, not the Vite UI),
+        <code>ZEVERSE_UI_URL</code>, Slack tokens, <code>ZEVERSE_DEFAULT_REPO_ID</code>, <code>ZEVERSE_REPO_ADMIN_USER_IDS</code>,
         <code>GOOGLE_SERVICE_ACCOUNT_PATH</code>, <code>FRESHRELEASE_*</code>, <code>GITHUB_TOKEN</code>.
       </p>
 
@@ -1053,7 +1053,7 @@ POST /api/harness/execute
           <tr><th>Path</th><th>Purpose</th></tr>
         </thead>
         <tbody>
-          <tr><td><code>config/archon.yaml</code></td><td>LLM provider, runner timeouts, optional policy.</td></tr>
+          <tr><td><code>config/zeverse.yaml</code></td><td>LLM provider, runner timeouts, optional policy.</td></tr>
           <tr><td><code>repos.json</code></td><td>Imported repo registry (<code>id</code>, <code>origin</code>, <code>defaultBranch</code>).</td></tr>
           <tr><td><code>server/</code></td><td>Express app, harness routes, workflow cache + loading, runner executors.</td></tr>
           <tr><td><code>ui/</code></td><td>Dashboard — import repos, browse workflows, trigger runs, tail logs.</td></tr>
@@ -1065,7 +1065,7 @@ POST /api/harness/execute
     </section>
 
     <footer style="margin-top:3rem;padding-top:1.5rem;border-top:1px solid var(--border);color:var(--muted);font-size:0.85rem;">
-      Zeverse design doc — generated for the zeverse repository. Workflow YAML and business rules live in each target repo under <code>.archon/</code>.
+      Zeverse design doc — generated for the zeverse repository. Workflow YAML and business rules live in each target repo under <code>.zeverse/</code>.
     </footer>
   </div>
 

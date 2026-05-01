@@ -43,6 +43,7 @@ const WORKFLOW_KEYWORDS: [RegExp, string][] = [
   [/freshrelease\.com\/ws\/.*\/tasks\//i, "fr-task-finisher"],
   [/\b(write\s+tests?|add\s+tests?)\b/i, "test-write"],
   [/\b(raise\s+pr|open\s+pr|create\s+pr)\b/i, "pr-raise"],
+  [/\b(fix\s+failing\s+tests?|fix\s+unit\s+tests?|failing\s+tests?|green\s+the\s+build)\b/i, "test-fix"],
   [/\b(fix|bug|broken|crash|error)\b/i, "fix-bug"],
   [/\b(review|pr\b|pull\s*request|code\s+review)\b/i, "code-review"],
   [/\blint\b/i, "lint-fix"],
@@ -142,7 +143,7 @@ function simulateHarnessRoute(
 }
 
 const AVAILABLE = new Set([
-  "harness", "dev", "fix-bug", "code-review", "explain-codebase",
+  "harness", "dev", "fix-bug", "test-fix", "code-review", "explain-codebase",
   "test-write", "pr-raise", "ask", "lint-fix", "upgrade-dep",
   "fr-analyze", "fr-task-finisher", "prd-analysis",
 ]);
@@ -155,6 +156,12 @@ run("proposal: keyword match for 'fix the login bug'", () => {
   assert.equal(result.workflow, "fix-bug");
   assert.equal(result.confidence, 0.95);
   assert.equal(result.repoId, "ubx-ui");
+});
+
+run("proposal: keyword match for 'fix failing tests'", () => {
+  const result = simulateHarnessRoute("fix failing tests", "ubx-ui", AVAILABLE, null);
+  assert.equal(result.type, "proposal");
+  assert.equal(result.workflow, "test-fix");
 });
 
 run("proposal: keyword match for 'write tests for foo.ts'", () => {

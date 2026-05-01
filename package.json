@@ -14,6 +14,7 @@
     "dev:ui": "npm run dev --workspace=ui",
     "dev:slack": "npm run dev --workspace=slack-bot",
     "check:zeverse": "node scripts/check-zeverse.cjs",
+    "check:cloudverse": "node scripts/check-cloudverse.cjs",
     "build": "npm run build --workspaces --if-present"
   }
 }

@@ -125,7 +125,7 @@ function ensureWorkflowsCache(repo: Repo): string {
     // cone mode silently ignores file patterns and reverts to defaults.
     spawnSync("git", [
       "sparse-checkout", "set", "--no-cone",
-      "/.archon/", "/.cursorrules", "/.cursor/rules/",
+      "/.zeverse/", "/.cursorrules", "/.cursor/rules/",
     ], { cwd: cacheDir, stdio: "pipe", encoding: "utf-8" });
   } else {
     spawnSync("git", ["fetch", "origin", repo.defaultBranch, "--depth=1"], {
@@ -147,12 +147,12 @@ export function refreshWorkflowsCache(repo: Repo): void {
 
 export function workflowsDir(repo: Repo): string {
   const cacheDir = ensureWorkflowsCache(repo);
-  return path.join(cacheDir, ".archon", "workflows");
+  return path.join(cacheDir, ".zeverse", "workflows");
 }
 
 export function commandsDir(repo: Repo): string {
   const cacheDir = ensureWorkflowsCache(repo);
-  return path.join(cacheDir, ".archon", "commands");
+  return path.join(cacheDir, ".zeverse", "commands");
 }
 
 export function loadWorkflows(repo: Repo): Workflow[] {
@@ -203,7 +203,7 @@ function readRuleFiles(dir: string, ext: string): { name: string; content: strin
 
 /**
  * Load repo-specific rules/skills from the workflows cache:
- *   1. .archon/rules/*.md
+ *   1. .zeverse/rules/*.md
  *   2. .cursorrules (single file)
  *   3. .cursor/rules/*.md
  */
@@ -211,8 +211,8 @@ export function loadRepoRules(repo: Repo): string {
   const cacheDir = ensureWorkflowsCache(repo);
   const parts: string[] = [];
 
-  for (const rule of readRuleFiles(path.join(cacheDir, ".archon", "rules"), ".md")) {
-    parts.push(`--- rules: .archon/rules/${rule.name} ---\n${rule.content}`);
+  for (const rule of readRuleFiles(path.join(cacheDir, ".zeverse", "rules"), ".md")) {
+    parts.push(`--- rules: .zeverse/rules/${rule.name} ---\n${rule.content}`);
   }
 
   const cursorrules = path.join(cacheDir, ".cursorrules");

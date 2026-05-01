@@ -34,6 +34,19 @@ interface MockCtx {
   steps: Record<string, { output: string }>;
 }
 
+function renderTemplate(template: string, ctx: MockCtx): string {
+  return template.replace(/\{\{([\w.\-]+)\}\}/g, (_m, path: string) => {
+    const parts = path.split(".");
+    let current: any = ctx;
+    for (const part of parts) {
+      if (current == null || typeof current !== "object") return "";
+      current = current[part];
+    }
+    if (current == null) return "";
+    return String(current);
+  });
+}
+
 function resolveChildWorkflow(
   step: MockStep,
   ctx: MockCtx
@@ -58,7 +71,11 @@ function resolveChildWorkflow(
   }
 
   if (step.inputsFrom && step.inputsFrom !== step.workflowFrom) {
-    const raw = ctx.steps[step.inputsFrom]?.output ?? "";
+    const spec = step.inputsFrom;
+    const isInlineTemplate = spec.includes("{{");
+    const raw = isInlineTemplate
+      ? renderTemplate(spec, ctx)
+      : (ctx.steps[spec]?.output ?? "");
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
@@ -170,6 +187,20 @@ run("inputsFrom merges with workflowFrom inputs", () => {
   assert.equal(result.workflowName, "dev");
   assert.equal(result.childInputs.requirement, "add feature");
   assert.equal(result.childInputs.area, "billing");
+});
+
+run("inputsFrom inline JSON template merges with childWorkflow", () => {
+  const step: MockStep = {
+    childWorkflow: "test-fix-iteration",
+    inputsFrom: '{"test_command": "{{inputs.test_command}}"}',
+  };
+  const ctx: MockCtx = {
+    inputs: { test_command: "npm ci && npm test", requirement: "" },
+    steps: {},
+  };
+  const result = resolveChildWorkflow(step, ctx);
+  assert.equal(result.workflowName, "test-fix-iteration");
+  assert.equal(result.childInputs.test_command, "npm ci && npm test");
 });
 
 console.log("\nAll tests passed.");

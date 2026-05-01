@@ -37,7 +37,7 @@ fi
 
 echo ""
 echo "## Existing rules/skills"
-for loc in .cursorrules .cursor/rules .archon/rules; do
+for loc in .cursorrules .cursor/rules .zeverse/rules; do
   if [ -e "$loc" ]; then
     echo "Found: $loc (DO NOT overwrite)"
   fi
@@ -46,13 +46,13 @@ done
 
 /**
  * Build an in-memory workflow that analyses a repo and drafts
- * `.archon/rules/*.md` files, then opens a PR via the standard
+ * `.zeverse/rules/*.md` files, then opens a PR via the standard
  * post-run commit/push/openPR path in the runner.
  */
 export function buildBootstrapRulesWorkflow(repo: Repo): Workflow {
   return {
     name: "bootstrap-rules",
-    description: "Analyse the codebase and generate .archon/rules/*.md files via PR",
+    description: "Analyse the codebase and generate .zeverse/rules/*.md files via PR",
     inputs: [],
     steps: [
       {
@@ -67,12 +67,12 @@ export function buildBootstrapRulesWorkflow(repo: Repo): Workflow {
         prompt: `You are an expert developer-experience engineer.
 
 You are given a fingerprint of the repository **${repo.name}** (origin: ${repo.origin}).
-Your job is to produce a set of Markdown rule files that will live under \`.archon/rules/\` in the repository.
+Your job is to produce a set of Markdown rule files that will live under \`.zeverse/rules/\` in the repository.
 These rules are consumed by an AI coding assistant to understand the project conventions, tech stack, testing patterns, and domain.
 
 Each rule file MUST be emitted as a fenced code block with a \`path=\` attribute, like:
 
-\`\`\`path=.archon/rules/tech-stack.md
+\`\`\`path=.zeverse/rules/tech-stack.md
 # Tech Stack
 ...
 \`\`\`
@@ -110,7 +110,7 @@ Rules for writing good rule files:
       {
         id: "summary",
         kind: "llm",
-        prompt: `Below is the output of a step that generated .archon/rules/*.md files for the repository **${repo.name}**.
+        prompt: `Below is the output of a step that generated .zeverse/rules/*.md files for the repository **${repo.name}**.
 Summarise what was generated in 2-4 sentences for use as a pull-request description body. Be concise. Do not use markdown headings.
 
 {{steps.draft-rules.output}}`,

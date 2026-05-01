@@ -404,7 +404,11 @@ async function runStepWithRetryAndLoop(
     // loopUntil check
     if (!loopUntil) return;
 
-    const rendered = renderTemplate(loopUntil, ctx).trim();
+    let rendered = renderTemplate(loopUntil, ctx).trim();
+    if (step.kind === "workflow") {
+      const sig = rendered.match(/ZEVERSE_CHILD_LOOP_SIGNAL:(yes|no)\b/i);
+      if (sig) rendered = sig[1]!.toLowerCase();
+    }
     const truthy = !!rendered && rendered !== "false" && rendered !== "no" && rendered !== "0";
     if (truthy) {
       appendLog(repo.id, runId, `[${step.id}] loopUntil satisfied after ${iteration + 1} iteration(s)`);
@@ -605,7 +609,7 @@ async function runWorkflow(
       try {
         const hasChanges = await session.hasUncommittedChanges();
         if (hasChanges) {
-          await session.commitAll(`chore(archon): ${runId.slice(0, 8)} workflow results`);
+          await session.commitAll(`chore(zeverse): ${runId.slice(0, 8)} workflow results`);
           appendLog(repo.id, runId, `Committed changes on branch ${session.runBranch}`);
         }
 
@@ -629,7 +633,7 @@ async function runWorkflow(
             ].join("\n");
 
         const pr = await session.openPR({
-          title: `[archon] ${workflow.name}: ${state.prompt.slice(0, 80)}`,
+          title: `[zeverse] ${workflow.name}: ${state.prompt.slice(0, 80)}`,
           body: prBody,
           baseBranch: session.baseBranch,
         });

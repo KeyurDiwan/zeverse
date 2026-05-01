@@ -5,6 +5,7 @@ import {
   fetchLogs,
   fetchRepos,
   fetchRun,
+  fetchRunById,
   fetchWorkflows,
   removeRepo,
   triggerRun,
@@ -29,6 +30,8 @@ const STATUS_COLORS: Record<RunStatus, string> = {
   running: "var(--accent)",
   success: "var(--success)",
   failed: "var(--error)",
+  awaiting_approval: "var(--warning)",
+  awaiting_thread_reply: "var(--warning)",
 };
 
 const SELECTED_REPO_KEY = "zeverse:selected-repo";
@@ -84,6 +87,7 @@ export default function App() {
   const [branchOverride, setBranchOverride] = useState("");
   const logOffset = useRef(0);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const deepLinkRunApplied = useRef(false);
 
   // Load repos.
   const refreshRepos = useCallback(async () => {
@@ -102,6 +106,46 @@ export default function App() {
   useEffect(() => {
     refreshRepos();
   }, [refreshRepos]);
+
+  // Open a specific run from ?run=<uuid> (e.g. Slack "View in Zeverse").
+  useEffect(() => {
+    if (deepLinkRunApplied.current || repos.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    const runFromUrl = params.get("run");
+    if (!runFromUrl) return;
+
+    deepLinkRunApplied.current = true;
+    let cancelled = false;
+
+    fetchRunById(runFromUrl)
+      .then((state) => {
+        if (cancelled) return;
+        if (!repos.some((r) => r.id === state.repoId)) {
+          setError(
+            `That run belongs to repo "${state.repoId}", which is not registered here. Add the repo first.`
+          );
+          return;
+        }
+        setError(null);
+        setSelectedRepoId(state.repoId);
+        setRunId(state.runId);
+        setRun(null);
+        setLogs("");
+        logOffset.current = 0;
+        window.history.replaceState({}, "", window.location.pathname || "/");
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setError(
+            "Could not load that run. Check the run ID, that zeverse-server is up, and state exists under state/."
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [repos]);
 
   // Persist repo selection.
   useEffect(() => {
@@ -264,7 +308,10 @@ export default function App() {
             setLogs((prev) => prev + logData.content);
             logOffset.current = logData.nextOffset;
           }
-          if (runState.status === "success" || runState.status === "failed") {
+          if (
+            runState.status === "success" ||
+            runState.status === "failed"
+          ) {
             break;
           }
         } catch {
@@ -531,7 +578,7 @@ export default function App() {
             <p style={{ padding: "12px 16px", fontSize: 12, color: "var(--text-dim)" }}>
               No workflows in this repo. Add YAML files to <br />
               <code style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
-                .archon/workflows/
+                .zeverse/workflows/
               </code>{" "}
               in the repo&apos;s default branch.
             </p>

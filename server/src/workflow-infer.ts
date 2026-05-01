@@ -11,6 +11,7 @@ const WORKFLOW_KEYWORDS: [RegExp, string][] = [
   [/\b(write\s+tests?|add\s+tests?|generate\s+tests?)\b/i, "test-write"],
   [/\b(raise\s+pr|open\s+pr|create\s+pr|submit\s+pr)\b/i, "pr-raise"],
   [/\bdebug\b/i, "debug"],
+  [/\b(fix\s+failing\s+tests?|fix\s+unit\s+tests?|failing\s+tests?|green\s+the\s+build)\b/i, "test-fix"],
   [/\b(fix|bug|broken|crash|error)\b/i, "fix-bug"],
   [/\b(review|pr\b|pull\s*request|code\s+review)\b/i, "code-review"],
   [/\blint\b/i, "lint-fix"],
@@ -33,15 +34,15 @@ function resolveAlias(workflow: string, available: Set<string>): string | null {
 
 /**
  * First workflow name that matches a keyword and exists in the repo (after aliases), or null.
- * If a more specific pattern matches but that workflow is not in the repo, we stop — we do not
- * fall through to broader rules (e.g. URL → fr-task-finisher), which would override "analyze fr …".
+ * If a pattern matches but that workflow is not in the repo, we continue to the next keyword
+ * so a missing optional workflow (e.g. test-fix) does not block a broader match (e.g. fix-bug).
  */
 export function matchWorkflowKeyword(prompt: string, available: Set<string>): string | null {
   for (const [pattern, workflow] of WORKFLOW_KEYWORDS) {
     if (!pattern.test(prompt)) continue;
     const resolved = resolveAlias(workflow, available);
     if (resolved) return resolved;
-    return null;
+    // Pattern matched but that workflow name is not in this repo — try the next keyword.
   }
   return null;
 }

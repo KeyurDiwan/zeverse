@@ -53,7 +53,7 @@ export function getHubRoot(): string {
 }
 
 export function loadConfig(): ZeverseConfig {
-  const configPath = path.join(getHubRoot(), "config", "archon.yaml");
+  const configPath = path.join(getHubRoot(), "config", "zeverse.yaml");
   const raw = fs.readFileSync(configPath, "utf-8");
   const parsed = YAML.parse(raw);
   return resolveConfigValues(parsed) as ZeverseConfig;

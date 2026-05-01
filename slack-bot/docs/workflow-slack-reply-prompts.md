@@ -1,6 +1,6 @@
 # Repo workflows: Slack-friendly LLM output
 
-Workflow YAML lives in each registered Git repository under `.archon/workflows/` (cached by Zeverse from the repo’s default branch). The Slack bot formats thread messages in code; prompts in those YAML files control **what the model writes**.
+Workflow YAML lives in each registered Git repository under `.zeverse/workflows/` (cached by Zeverse from the repo’s default branch). The Slack bot formats thread messages in code; prompts in those YAML files control **what the model writes**.
 
 ## PRD analysis (`--- SLACK REPLY ---`)
 

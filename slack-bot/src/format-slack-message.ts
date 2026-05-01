@@ -1,6 +1,6 @@
 /**
  * Normalize and optionally convert list bullets to numbered lines for Slack mrkdwn.
- * Repo-side workflow prompts (`.archon/workflows/*.yaml`) still control LLM tone;
+ * Repo-side workflow prompts (`.zeverse/workflows/*.yaml`) still control LLM tone;
  * these helpers unify spacing and list style in posted messages.
  */
 

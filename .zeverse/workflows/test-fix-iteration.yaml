@@ -1,0 +1,74 @@
+name: test-fix-iteration
+description: One iteration — run tests, propose edits, approve, apply, verify, emit loop signal.
+inputs:
+  - id: test_command
+    label: Test command
+    required: true
+steps:
+  - id: run-tests
+    kind: shell
+    command: "{{inputs.test_command}}"
+    continueOnError: true
+
+  - id: need-fix
+    kind: llm
+    prompt: |
+      You are judging unit test output. Read the output below.
+
+      If all tests passed (success, exit 0, green, no failures), reply with exactly:
+      no
+
+      If there are any failures, errors, stack traces, or the run clearly did not pass, reply with exactly:
+      yes
+
+      Do not add any other words or punctuation.
+
+      --- TEST OUTPUT ---
+      {{steps.run-tests.output}}
+
+  - id: analyze-failures
+    kind: llm
+    when: "{{steps.need-fix.output}}"
+    prompt: |
+      The following unit test run failed or is red. Propose minimal fixes using fenced
+      ```edit path=relative/path.ext``` blocks with SEARCH/REPLACE or CREATE sections
+      (see Zeverse edit step format). Prefer fixing production code over tests unless
+      the test is objectively wrong.
+
+      --- FAILED TEST OUTPUT ---
+      {{steps.run-tests.output}}
+
+  - id: approval
+    kind: approval
+    when: "{{steps.need-fix.output}}"
+    prompt: "Apply the proposed edits to fix failing unit tests?"
+
+  - id: apply-edits
+    kind: edit
+    when: "{{steps.need-fix.output}}"
+    content: "{{steps.analyze-failures.output}}"
+
+  - id: verify
+    kind: shell
+    when: "{{steps.need-fix.output}}"
+    command: "{{inputs.test_command}}"
+    continueOnError: true
+
+  - id: loop-signal
+    kind: llm
+    prompt: |
+      Decide whether unit tests are fully passing now (no further iteration needed).
+
+      need-fix (yes = had failures this round before fix attempt): {{steps.need-fix.output}}
+
+      run-tests output:
+      {{steps.run-tests.output}}
+
+      verify output (may be empty if fixes were not needed this round):
+      {{steps.verify.output}}
+
+      Rules:
+      - If need-fix is no, reply exactly: yes
+      - If need-fix is yes, reply yes only if verify output shows all tests passed; otherwise no
+
+      Reply with exactly one word, lowercase: yes or no. No punctuation or explanation.

@@ -165,7 +165,7 @@ export interface AcquireSessionOpts {
 export async function acquireSession(opts: AcquireSessionOpts): Promise<RepoSession> {
   const { repo, runId, workflowName, keepWorkspace } = opts;
   const baseBranch = opts.baseBranch || repo.defaultBranch;
-  const runBranch = `archon/${workflowName}/${runId.slice(0, 8)}`;
+  const runBranch = `zeverse/${workflowName}/${runId.slice(0, 8)}`;
 
   if (keepWorkspace) {
     return acquireManaged(repo, baseBranch, runBranch, runId);

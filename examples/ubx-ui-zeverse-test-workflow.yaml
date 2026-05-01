@@ -1,0 +1,49 @@
+# Sync this file to freshdesk/ubx-ui as `.zeverse/workflows/test.yaml` (on the branch
+# Zeverse uses as defaultBranch in repos.json). Zeverse clones have no node_modules;
+# you must install before Jest. After pushing, refresh the hub cache (see bottom).
+name: test
+description: Run Jest (optionally scoped) and summarise failures with suggested fixes.
+inputs:
+  - id: pattern
+    label: Test path pattern (e.g. src/pages/billing, leave blank for all)
+    required: false
+steps:
+  # ubx-ui needs --legacy-peer-deps (peer conflicts). Prefer ci when lockfile exists.
+  - id: install
+    kind: shell
+    command: |
+      if [ -f package-lock.json ]; then
+        npm ci --legacy-peer-deps
+      else
+        npm install --legacy-peer-deps
+      fi
+
+  # Use project's Jest (from node_modules), not `npx jest` which can download Jest 30+ without jsdom.
+  - id: jest
+    kind: shell
+    command: |
+      if [ -n "{{inputs.pattern}}" ]; then
+        npm exec -- jest --watchAll=false --passWithNoTests --colors=false "{{inputs.pattern}}"
+      else
+        npm exec -- jest --watchAll=false --passWithNoTests --colors=false
+      fi
+    continueOnError: true
+
+  - id: summarise
+    kind: llm
+    prompt: |
+      Jest output for UBX UI:
+
+      {{steps.jest.output}}
+
+      Produce:
+      1. PASS / FAIL summary (totals: suites, tests, time).
+      2. For each failing test:
+         - Test name and file path.
+         - One-line root cause (based on the stack + assertion).
+         - Concrete suggested fix (code, config, or test change).
+      3. Flaky / slow tests worth attention.
+      4. If everything passed, say so in one line.
+
+# After updating this file on GitHub, either wait ~60s for workflow cache TTL or:
+#   curl -X POST "http://127.0.0.1:3100/api/repos/ubx-ui/refresh-workflows"

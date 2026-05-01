@@ -144,7 +144,7 @@ routeIntentRoutes.post("/route-intent", async (req: Request, res: Response) => {
     }
 
     // Delegate to harness route internally
-    const harnessUrl = `http://localhost:${process.env.ARCHON_SERVER_PORT ?? "3100"}/api/harness/route`;
+    const harnessUrl = `http://localhost:${process.env.ZEVERSE_SERVER_PORT ?? "3100"}/api/harness/route`;
     const harnessRes = await fetch(harnessUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -394,7 +394,7 @@ export async function executePatchStep(
       continue;
     }
 
-    const tmp = path.join(os.tmpdir(), `archon-patch-${runId}-${i}.patch`);
+    const tmp = path.join(os.tmpdir(), `zeverse-patch-${runId}-${i}.patch`);
     fs.writeFileSync(tmp, patch, "utf8");
 
     try {
@@ -700,7 +700,13 @@ function resolveChildWorkflow(
   }
 
   if (step.inputsFrom && step.inputsFrom !== step.workflowFrom) {
-    const raw = ctx.steps[step.inputsFrom]?.output ?? "";
+    // `inputsFrom` is either (legacy) a step id whose output is JSON, or an inline
+    // JSON template string containing `{{...}}` (e.g. child workflow inputs).
+    const spec = step.inputsFrom;
+    const isInlineTemplate = spec.includes("{{");
+    const raw = isInlineTemplate
+      ? renderTemplate(spec, ctx)
+      : (ctx.steps[spec]?.output ?? "");
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
@@ -794,7 +800,30 @@ export async function executeWorkflowStep(
       ].join("\n");
 
       appendLog(repoId, runId, `[${step.id}] ${summary.split("\n")[0]}`);
-      return summary;
+
+      if (childState.status === "failed") {
+        throw new Error(
+          `Child workflow "${workflowName}" failed (run ${childRunId}).\n${summary}`
+        );
+      }
+
+      const lastSuccess = [...childState.steps]
+        .reverse()
+        .find(
+          (s) =>
+            s.status === "success" &&
+            s.output &&
+            !String(s.output).startsWith("(skipped")
+        );
+      const lastLine =
+        (lastSuccess?.output ?? "")
+          .trim()
+          .split("\n")
+          .pop()
+          ?.trim() ?? "";
+      const normalized = /^(yes|no)$/i.test(lastLine) ? lastLine.toLowerCase() : "no";
+
+      return `${summary}\nZEVERSE_CHILD_LOOP_SIGNAL:${normalized}`;
     }
   }
 

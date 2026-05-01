@@ -77,7 +77,7 @@ run("returns empty array for unrecognised input", () => {
  * 3. Assert that files whose ops all failed are NOT written to disk.
  */
 run("failing SEARCH against non-existent file must not create it", () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-edit-test-"));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zeverse-edit-test-"));
   const targetPath = path.join(tmpDir, "src", "does-not-exist.ts");
 
   // Simulate what executeEditStep does: cache the file (doesn't exist → empty),
@@ -112,7 +112,7 @@ run("failing SEARCH against non-existent file must not create it", () => {
 });
 
 run("successful SEARCH/REPLACE flushes the file", () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-edit-test-"));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zeverse-edit-test-"));
   const targetPath = path.join(tmpDir, "src", "exists.ts");
 
   // Pre-create the file with known content
@@ -149,7 +149,7 @@ run("successful SEARCH/REPLACE flushes the file", () => {
 });
 
 run("mixed ops: only files with successful edits are flushed", () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "archon-edit-test-"));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zeverse-edit-test-"));
   const goodPath = path.join(tmpDir, "good.ts");
   const badPath = path.join(tmpDir, "nonexistent", "bad.ts");
 

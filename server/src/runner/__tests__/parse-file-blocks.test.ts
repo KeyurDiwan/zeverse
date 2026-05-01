@@ -24,11 +24,11 @@ function run(test: string, fn: () => void) {
 
 console.log("parseFileBlocks tests\n");
 
-run("parses ```path=.archon/rules/a.md opening (no lang, no space)", () => {
-  const text = "```path=.archon/rules/a.md\n# hello\n```";
+run("parses ```path=.zeverse/rules/a.md opening (no lang, no space)", () => {
+  const text = "```path=.zeverse/rules/a.md\n# hello\n```";
   const b = parseFileBlocks(text);
   assert.equal(b.length, 1);
-  assert.equal(b[0].path, ".archon/rules/a.md");
+  assert.equal(b[0].path, ".zeverse/rules/a.md");
   assert.ok(b[0].content.includes("# hello"));
 });
 
@@ -41,10 +41,10 @@ run("parses path= with trailing text on opening line", () => {
 });
 
 run("Path= is case-insensitive on opening line", () => {
-  const text = "```Path=.archon/rules/conventions.md\n# c\n```";
+  const text = "```Path=.zeverse/rules/conventions.md\n# c\n```";
   const b = parseFileBlocks(text);
   assert.equal(b.length, 1);
-  assert.equal(b[0].path, ".archon/rules/conventions.md");
+  assert.equal(b[0].path, ".zeverse/rules/conventions.md");
 });
 
 run("FILE= alias works", () => {
@@ -78,10 +78,10 @@ run("strip UTF-8 BOM before parse", () => {
 });
 
 run("double-quoted path", () => {
-  const text = '```path=".archon/rules/spaced name.md"\nok\n```';
+  const text = '```path=".zeverse/rules/spaced name.md"\nok\n```';
   const b = parseFileBlocks(text);
   assert.equal(b.length, 1);
-  assert.equal(b[0].path, ".archon/rules/spaced name.md");
+  assert.equal(b[0].path, ".zeverse/rules/spaced name.md");
 });
 
 if (process.exitCode !== 1) {

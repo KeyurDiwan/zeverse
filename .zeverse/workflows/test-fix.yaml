@@ -1,0 +1,33 @@
+name: test-fix
+description: >-
+  Run unit tests; if any fail, propose fixes, pause for Slack approval, apply edits,
+  and repeat until tests pass or max iterations. Opens a PR on success (branch isolation).
+inputs:
+  - id: install_command
+    label: Install command (optional, e.g. npm ci)
+    required: false
+  - id: test_command
+    label: >-
+      Test command (default for this hub is npm ci && npm run test if omitted)
+    required: false
+isolation: branch
+steps:
+  - id: setup
+    kind: shell
+    when: "{{inputs.install_command}}"
+    command: "{{inputs.install_command}}"
+    continueOnError: true
+
+  - id: iterate-fix
+    kind: workflow
+    childWorkflow: test-fix-iteration
+    inputsFrom: '{"test_command": "{{inputs.test_command}}"}'
+    loopUntil: "{{steps.iterate-fix.output}}"
+    maxIterations: 6
+
+  - id: summary
+    kind: llm
+    prompt: |
+      Summarise the test-fix run for the PR body (what failed, what changed, final state).
+      Last child iteration output:
+      {{steps.iterate-fix.output}}

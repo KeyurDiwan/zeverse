@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Verifies the same base URL the Slack bot uses (ARCHON_SERVER_URL) returns JSON from the API.
+ * Verifies the same base URL the Slack bot uses (ZEVERSE_SERVER_URL) returns JSON from the API.
  * Run from repo root: npm run check:zeverse
  */
 const path = require("path");
@@ -18,7 +18,7 @@ function loadEnv() {
 }
 
 loadEnv();
-const base = (process.env.ARCHON_SERVER_URL || "http://127.0.0.1:3100").replace(/\/$/, "");
+const base = (process.env.ZEVERSE_SERVER_URL || "http://127.0.0.1:3100").replace(/\/$/, "");
 
 function get(url) {
   return new Promise((resolve, reject) => {
@@ -47,8 +47,8 @@ async function check(pathname, needJson) {
       console.log(head + "…");
       console.error(
         "\n  ERROR: got HTML, not JSON. The Slack bot will fail with 'Unexpected token'." +
-          "\n  Fix: set ARCHON_SERVER_URL in .env to the API, e.g. http://127.0.0.1:3100" +
-          "\n  (not the Vite UI on 5173). Unset a wrong shell var: env -u ARCHON_SERVER_URL npm run check:zeverse"
+          "\n  Fix: set ZEVERSE_SERVER_URL in .env to the API, e.g. http://127.0.0.1:3100" +
+          "\n  (not the Vite UI on 5173). Unset a wrong shell var: env -u ZEVERSE_SERVER_URL npm run check:zeverse"
       );
       return false;
     }
@@ -67,7 +67,7 @@ async function check(pathname, needJson) {
 }
 
 (async () => {
-  console.log(`ARCHON_SERVER_URL (effective) = ${base}`);
+  console.log(`ZEVERSE_SERVER_URL (effective) = ${base}`);
   if (/5173$/.test(base) && !/3100/.test(base)) {
     console.warn("Warning: URL ends with :5173 — use :3100 for the Express API.\n");
   }

@@ -138,7 +138,7 @@ harnessRoutes.post("/harness/route", async (req: Request, res: Response) => {
       res.json({
         type: "answer",
         repoId,
-        answer: "This repo has no workflows defined yet. Add `.archon/workflows/*.yaml` to get started.",
+        answer: "This repo has no workflows defined yet. Add `.zeverse/workflows/*.yaml` to get started.",
         confidence: 0,
         reason: "No workflows found in repo",
       } satisfies HarnessRouteResponse);
@@ -346,10 +346,16 @@ harnessRoutes.post("/harness/route", async (req: Request, res: Response) => {
       reason,
     } satisfies HarnessRouteResponse);
   } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    console.error("[harness/route]", msg, err);
     res.status(500).json({
-      error: `Harness route failed: ${err.message}`,
+      error: `Harness route failed: ${msg}`,
       type: "answer",
-      answer: "Sorry, something went wrong. Please try again.",
+      answer:
+        `Something went wrong while routing your request.\n\n` +
+        `*Detail:* ${msg}\n\n` +
+        `Typical causes: LLM/API misconfiguration (check CLOUDVERSE_* / server logs), ` +
+        `workflow cache clone failure, or invalid YAML in \`.zeverse/workflows/\`.`,
     });
   }
 });
@@ -404,6 +410,10 @@ harnessRoutes.post("/harness/execute", async (req: Request, res: Response) => {
 
     const frUrl = extractFreshreleaseTaskUrl(prompt ?? "");
     if (frUrl && !mergedInputs.frUrl) mergedInputs.frUrl = frUrl;
+
+    if (workflowName === "test-fix" && !(mergedInputs.test_command ?? "").trim()) {
+      mergedInputs.test_command = "npm ci && npm run test";
+    }
 
     const missing = workflow.inputs
       .filter((inp) => inp.required && !(mergedInputs[inp.id] ?? "").trim())
