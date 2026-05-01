@@ -1,0 +1,1087 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Zeverse — Design &amp; Integration</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --surface: #171a21;
+      --border: #2a3140;
+      --text: #e8eaed;
+      --muted: #9aa3b2;
+      --accent: #6ee7b7;
+      --accent-dim: #34d399;
+      --link: #93c5fd;
+      --warn: #fcd34d;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+      font-size: 15px;
+    }
+    .wrap {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 2rem 1.25rem 4rem;
+    }
+    header {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+      margin: 0 0 0.35rem;
+    }
+    .subtitle { color: var(--muted); margin: 0; font-size: 0.95rem; }
+    h2 {
+      font-size: 1.2rem;
+      margin: 2.25rem 0 0.75rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid var(--border);
+      scroll-margin-top: 1rem;
+    }
+    h2:first-of-type { border-top: none; padding-top: 0; }
+    h3 { font-size: 1rem; margin: 1.25rem 0 0.5rem; color: var(--muted); font-weight: 600; }
+    p { margin: 0.65rem 0; }
+    a { color: var(--link); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--surface);
+      padding: 0.12em 0.35em;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+    pre {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.1rem;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+    pre code { border: none; padding: 0; background: transparent; }
+    ul, ol { margin: 0.5rem 0; padding-left: 1.35rem; }
+    li { margin: 0.35rem 0; }
+    .toc {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.25rem 1.1rem;
+      margin: 1.5rem 0 0;
+    }
+    .toc strong { display: block; margin-bottom: 0.5rem; }
+    .toc ol { margin: 0; padding-left: 1.2rem; }
+    .toc a { color: var(--accent-dim); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+      margin: 0.75rem 0 1rem;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.6rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--surface); color: var(--muted); font-weight: 600; }
+    .callout {
+      border-left: 3px solid var(--accent);
+      background: rgba(52, 211, 153, 0.08);
+      padding: 0.75rem 1rem;
+      margin: 1rem 0;
+      border-radius: 0 8px 8px 0;
+      font-size: 0.92rem;
+    }
+    figure.diagram {
+      margin: 1.25rem 0;
+      padding: 1rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    figure.diagram figcaption {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+    figure.diagram svg { display: block; width: 100%; height: auto; }
+
+    /* Animated dashed connectors — architecture */
+    @keyframes dash-move {
+      to { stroke-dashoffset: -24; }
+    }
+    .flow-path {
+      fill: none;
+      stroke: var(--accent-dim);
+      stroke-width: 2;
+      stroke-dasharray: 8 6;
+      stroke-linecap: round;
+      animation: dash-move 2s linear infinite;
+      opacity: 0.85;
+    }
+    .flow-node rect, .flow-node path.box {
+      fill: #1e2430;
+      stroke: var(--border);
+      stroke-width: 1.5;
+    }
+    .flow-node.active rect,
+    .flow-node.active path.box {
+      stroke: var(--accent);
+      stroke-width: 2;
+      filter: drop-shadow(0 0 8px rgba(52, 211, 153, 0.35));
+    }
+    .flow-label {
+      fill: var(--text);
+      font-size: 11px;
+      font-family: system-ui, sans-serif;
+      font-weight: 600;
+    }
+    .flow-sublabel {
+      fill: var(--muted);
+      font-size: 9px;
+      font-family: system-ui, sans-serif;
+    }
+
+    /* Harness phases — stepped highlight */
+    .harness-steps { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: stretch; margin-top: 0.5rem; }
+    .h-step {
+      flex: 1 1 90px;
+      min-height: 72px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.5rem 0.55rem;
+      font-size: 0.72rem;
+      line-height: 1.35;
+      color: var(--muted);
+      transition: background 0.35s ease, border-color 0.35s ease, color 0.35s ease, transform 0.35s ease;
+    }
+    .h-step strong { display: block; color: var(--text); font-size: 0.76rem; margin-bottom: 0.15rem; }
+    .h-step.on {
+      border-color: var(--accent);
+      background: rgba(52, 211, 153, 0.12);
+      color: var(--text);
+      transform: translateY(-2px);
+    }
+
+    /* Run lifecycle rail */
+    @keyframes segment-pulse {
+      0%, 100% { opacity: 0.35; }
+      40% { opacity: 1; }
+    }
+    .rail-wrap { padding: 0.5rem 0; }
+    .rail-seg {
+      animation: segment-pulse 4s ease-in-out infinite;
+    }
+    /* Delays assume .rail-seg <g> elements are the first six SVG children */
+    svg.rail-svg > g.rail-seg:nth-child(1) { animation-delay: 0s; }
+    svg.rail-svg > g.rail-seg:nth-child(2) { animation-delay: 0.55s; }
+    svg.rail-svg > g.rail-seg:nth-child(3) { animation-delay: 1.1s; }
+    svg.rail-svg > g.rail-seg:nth-child(4) { animation-delay: 1.65s; }
+    svg.rail-svg > g.rail-seg:nth-child(5) { animation-delay: 2.2s; }
+    svg.rail-svg > g.rail-seg:nth-child(6) { animation-delay: 2.75s; }
+
+    /* Request-flow swimlane */
+    @keyframes swim-glow {
+      0%, 100% { opacity: 0.25; }
+      50% { opacity: 1; }
+    }
+    .req-lane-path {
+      fill: none;
+      stroke: var(--accent-dim);
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-dasharray: 10 8;
+      animation: dash-move 2.2s linear infinite, swim-glow 5s ease-in-out infinite;
+    }
+    .req-phase { transition: opacity 0.4s ease; }
+    dl.faq dt { font-weight: 600; color: var(--text); margin-top: 1rem; }
+    dl.faq dd { margin: 0.35rem 0 0 0; padding-left: 0; color: var(--muted); }
+    .req-table td:first-child { white-space: nowrap; font-family: ui-monospace, monospace; font-size: 0.82rem; }
+
+    /* Sequence diagrams — scroll wide canvases on small screens */
+    figure.seq-diagram {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: 0.25rem;
+    }
+    figure.seq-diagram svg.seq-canvas {
+      min-width: 720px;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    text.seq-note { fill: #9aa3b2; font-size: 8px; }
+    text.seq-participant { fill: #e8eaed; font-size: 11px; font-weight: 600; }
+    text.seq-msg { fill: #c9d6e8; font-size: 9px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    text.seq-msg-sm { fill: #93c5fd; font-size: 8px; font-family: ui-monospace, monospace; }
+    .seq-frame { fill: rgba(52, 211, 153, 0.06); stroke: #2a3140; stroke-width: 1; rx: 4; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Zeverse — System design</h1>
+      <p class="subtitle">Multi-repo AI workflow runner: control plane, target-repo workflows, harness routing, and run lifecycle.</p>
+      <nav class="toc" aria-label="Table of contents">
+        <strong>Contents</strong>
+        <ol>
+          <li><a href="#summary">Executive summary</a></li>
+          <li><a href="#architecture">Architecture</a></li>
+          <li><a href="#request-flow">End-to-end request flow</a></li>
+          <li><a href="#rules-skills">Rules, skills &amp; repo-local context</a></li>
+          <li><a href="#integration">Integrating another repository</a></li>
+          <li><a href="#workflow-model">Workflow model &amp; step kinds</a></li>
+          <li><a href="#run-lifecycle">Run lifecycle</a></li>
+          <li><a href="#harness">Harness &amp; Slack pipeline</a></li>
+          <li><a href="#policy">Policy, audit, observability</a></li>
+          <li><a href="#reference">API &amp; environment reference</a></li>
+        </ol>
+      </nav>
+    </header>
+
+    <section id="summary">
+      <h2>1. Executive summary</h2>
+      <p>
+        <strong>Zeverse</strong> is a project-agnostic <em>control plane</em>: an Express API and workflow runner (<code>server/</code>),
+        a Vite + React dashboard (<code>ui/</code>), and an optional Slack Bolt bot (<code>slack-bot/</code>) that share one pipeline.
+        Business logic for <em>what</em> to automate lives in each <strong>target repository</strong> under
+        <code>.archon/workflows/</code> and <code>.archon/commands/</code> — not inside the Zeverse repo itself.
+      </p>
+      <p>
+        Runs create an isolated git workspace (usually ephemeral), execute YAML-defined steps (LLM, shell, patches, integrations),
+        optionally pause for human approval or Slack thread replies, then push a branch and open a pull request when branch isolation is enabled.
+      </p>
+      <div class="callout">
+        Mental model: Zeverse = registry + orchestration + surfaces. Each app repo = workflows + conventions + optional per-repo harness routing.
+        See <a href="#request-flow">section 3</a> for how a single user request moves through the stack, and <a href="#rules-skills">section 4</a> for why conventions live beside application code.
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2>2. High-level architecture</h2>
+      <p>
+        Users and automations reach the <strong>API</strong> on port 3100 (configurable). The server loads workflow definitions from the
+        registered repo’s checkout or cache, acquires a <strong>session</strong> (clone path + branch), runs step executors, and writes
+        state under <code>state/&lt;repoId&gt;/runs/</code>. External systems: git remote (GitHub), LLM (CloudVerse / config in
+        <code>config/archon.yaml</code>), optional Google Docs, Freshrelease, Confluence — depending on workflow steps and env vars.
+      </p>
+
+      <figure class="diagram" aria-label="Architecture diagram">
+        <figcaption>Figure 1 — Control plane and data paths (animated connectors show request/data flow).</figcaption>
+        <svg viewBox="0 0 720 320" xmlns="http://www.w3.org/2000/svg" role="img">
+          <!-- Surfaces -->
+          <g class="flow-node">
+            <rect x="24" y="32" width="100" height="44" rx="6" />
+            <text class="flow-label" x="74" y="52" text-anchor="middle">UI</text>
+            <text class="flow-sublabel" x="74" y="66" text-anchor="middle">:5173</text>
+          </g>
+          <g class="flow-node">
+            <rect x="24" y="100" width="100" height="44" rx="6" />
+            <text class="flow-label" x="74" y="120" text-anchor="middle">Slack bot</text>
+            <text class="flow-sublabel" x="74" y="134" text-anchor="middle">:3200</text>
+          </g>
+          <g class="flow-node">
+            <rect x="24" y="168" width="100" height="44" rx="6" />
+            <text class="flow-label" x="74" y="188" text-anchor="middle">API clients</text>
+            <text class="flow-sublabel" x="74" y="202" text-anchor="middle">curl / CI</text>
+          </g>
+          <!-- Server -->
+          <g class="flow-node active">
+            <rect x="200" y="80" width="160" height="90" rx="8" />
+            <text class="flow-label" x="280" y="108" text-anchor="middle">Zeverse server</text>
+            <text class="flow-sublabel" x="280" y="124" text-anchor="middle">Express + runner</text>
+            <text class="flow-sublabel" x="280" y="138" text-anchor="middle">/api/* · :3100</text>
+            <text class="flow-sublabel" x="280" y="152" text-anchor="middle">loadWorkflows · startRun</text>
+          </g>
+          <!-- Registry -->
+          <g class="flow-node">
+            <rect x="200" y="210" width="160" height="56" rx="6" />
+            <text class="flow-label" x="280" y="232" text-anchor="middle">repos.json</text>
+            <text class="flow-sublabel" x="280" y="248" text-anchor="middle">registry of origins</text>
+          </g>
+          <!-- State -->
+          <g class="flow-node">
+            <rect x="420" y="40" width="130" height="50" rx="6" />
+            <text class="flow-label" x="485" y="62" text-anchor="middle">state/</text>
+            <text class="flow-sublabel" x="485" y="76" text-anchor="middle">logs · events NDJSON</text>
+          </g>
+          <!-- Workspace -->
+          <g class="flow-node">
+            <rect x="420" y="110" width="130" height="50" rx="6" />
+            <text class="flow-label" x="485" y="132" text-anchor="middle">Clone / workdir</text>
+            <text class="flow-sublabel" x="485" y="146" text-anchor="middle">ephemeral or repos/</text>
+          </g>
+          <!-- External -->
+          <g class="flow-node">
+            <rect x="420" y="190" width="130" height="76" rx="6" />
+            <text class="flow-label" x="485" y="212" text-anchor="middle">Externals</text>
+            <text class="flow-sublabel" x="485" y="226" text-anchor="middle">Git · LLM · GDoc · FR</text>
+          </g>
+          <!-- Paths to server -->
+          <path class="flow-path" d="M 130 56 L 195 115" />
+          <path class="flow-path" d="M 130 124 L 195 124" />
+          <path class="flow-path" d="M 130 192 L 195 135" />
+          <path class="flow-path" d="M 365 125 L 415 65" />
+          <path class="flow-path" d="M 365 135 L 415 135" />
+          <path class="flow-path" d="M 365 155 L 415 210" />
+        </svg>
+      </figure>
+    </section>
+
+    <section id="request-flow">
+      <h2>3. End-to-end request flow</h2>
+      <p>
+        A “request” is anything that eventually triggers work on a registered repo: a click in the UI, a Slack message or button action,
+        or an HTTP client calling the API. The path splits into <strong>harness-mediated flows</strong> (route → confirm → execute, typical for Slack)
+        and <strong>direct runs</strong> (<code>POST /api/run-workflow</code> when the caller already knows <code>repoId</code> and <code>workflow</code>).
+      </p>
+
+      <figure class="diagram" aria-label="Request swimlane">
+        <figcaption>Figure 2a — Harness-heavy path overview (animated connectors; Figures 2b–2d show message-level sequences).</figcaption>
+        <svg viewBox="0 0 720 140" xmlns="http://www.w3.org/2000/svg" role="img">
+          <text x="360" y="18" text-anchor="middle" fill="#9aa3b2" font-size="11" font-family="system-ui,sans-serif">Surface → API route → Proposal UI → Execute → Runner → Remote git</text>
+          <rect x="12" y="36" width="88" height="36" rx="6" fill="#1e2430" stroke="#2a3140" />
+          <text x="56" y="58" text-anchor="middle" fill="#e8eaed" font-size="10" font-weight="600">Client</text>
+          <rect x="118" y="36" width="88" height="36" rx="6" fill="#1e2430" stroke="#2a3140" />
+          <text x="162" y="58" text-anchor="middle" fill="#e8eaed" font-size="10" font-weight="600">/harness/route</text>
+          <rect x="224" y="36" width="88" height="36" rx="6" fill="#1e2430" stroke="#2a3140" />
+          <text x="268" y="58" text-anchor="middle" fill="#e8eaed" font-size="10" font-weight="600">Proposal</text>
+          <rect x="330" y="36" width="88" height="36" rx="6" fill="#1e2430" stroke="#2a3140" />
+          <text x="374" y="58" text-anchor="middle" fill="#e8eaed" font-size="10" font-weight="600">/execute</text>
+          <rect x="436" y="36" width="88" height="36" rx="6" fill="#1e2430" stroke="#2a3140" />
+          <text x="480" y="58" text-anchor="middle" fill="#e8eaed" font-size="10" font-weight="600">Runner</text>
+          <rect x="542" y="36" width="168" height="36" rx="6" fill="#1e2430" stroke="#34d399" stroke-width="1.5" />
+          <text x="626" y="58" text-anchor="middle" fill="#e8eaed" font-size="10" font-weight="600">GitHub / origin</text>
+          <path class="req-lane-path" d="M 100 54 L 116 54 M 206 54 L 222 54 M 312 54 L 328 54 M 418 54 L 434 54 M 524 54 L 540 54" />
+        </svg>
+      </figure>
+
+      <h3>3.1 Layers of responsibility</h3>
+      <table class="req-table">
+        <thead>
+          <tr><th>Layer</th><th>Role</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Surface</td><td>Collects intent (prompt, repo hint, branch, Slack channel/user metadata).</td></tr>
+          <tr><td>API</td><td>Validates JSON bodies, applies <a href="#policy">policy</a>, resolves <code>repos.json</code>, loads YAML from workflow cache.</td></tr>
+          <tr><td>Harness (optional)</td><td>Selects workflow via keywords, per-repo <code>harness.yaml</code>, or hub LLM; returns proposal vs answer vs clarify.</td></tr>
+          <tr><td>Runner</td><td><code>startRun</code>: allocates run id, persists state, acquires git session (clone/fetch), executes steps in order.</td></tr>
+          <tr><td>Executors</td><td>Per-step backends: LLM chat, subprocess shell, patch/apply/edit, Google Docs, Freshrelease, child workflows, gates.</td></tr>
+          <tr><td>Persistence</td><td>Append logs; NDJSON events; optional audit line on harness execute; git push + PR when isolation demands it.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>3.2 Harness-mediated flow (Slack / universal routing)</h3>
+      <ol>
+        <li><strong>Ingress</strong> — Slack Bolt (or another client) sends <code>POST /api/harness/route</code> with at least <code>{ "prompt": "..." }</code>. Optional: <code>repoId</code>, <code>threadContext</code> (prior turns), <code>surface</code>.</li>
+        <li><strong>Resolution</strong> — Server resolves repo (explicit id → else LLM inference over registry → else <code>clarify</code>). Empty workflow list yields an informational <code>answer</code>.</li>
+        <li><strong>Routing</strong> — Keyword match → immediate <code>proposal</code>. Else dry-run repo <code>harness</code> workflow (<code>catalog</code> + <code>route</code> steps). Else hub builds workflow catalog + optional <a href="#rules-skills">repo rules text</a> and asks the LLM for structured JSON.</li>
+        <li><strong>Response contract</strong> — <code>proposal</code> includes <code>workflow</code>, merged <code>inputs</code>, <code>confidence</code>, <code>reason</code>. Low confidence or unknown workflow → <code>answer</code> (chat-only). Missing repo → <code>clarify</code>.</li>
+        <li><strong>Human confirm</strong> — Slack bot renders Run / Pick another / Cancel. No mutation of the remote repo happens until confirmation.</li>
+        <li><strong>Execute</strong> — On confirm: <code>POST /api/harness/execute</code> with <code>repoId</code>, <code>workflow</code>, <code>inputs</code>/<code>prompt</code>, optional <code>slackUser</code>, <code>channel</code>, <code>surface</code>, <code>baseBranch</code>. Policy check → validate required workflow inputs → <code>startRun</code> → audit log line.</li>
+        <li><strong>Observe</strong> — Clients poll <code>/api/runs/:id</code>, <code>/api/logs/:id</code>, <code>/api/runs/:id/events</code>. Slack maps milestone step ids to thread posts when configured.</li>
+      </ol>
+
+      <figure class="diagram seq-diagram" aria-label="Sequence harness route">
+        <figcaption>Figure 2b — Sequence: <code>POST /api/harness/route</code> (repo resolution → keyword / per-repo harness dry-run → optional hub LLM → JSON response).</figcaption>
+        <svg class="seq-canvas" viewBox="0 0 780 400" xmlns="http://www.w3.org/2000/svg" role="img">
+          <defs>
+            <marker id="hrSolid" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#34d399"/></marker>
+            <marker id="hrDash" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto"><path d="M9,0 L9,6 L0,3 z" fill="#9aa3b2"/></marker>
+          </defs>
+          <!-- Participants -->
+          <rect x="28" y="8" width="104" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="80" y="28" text-anchor="middle">Slack Bolt</text>
+          <rect x="236" y="8" width="120" height="32" rx="5" fill="#1e2430" stroke="#34d399" stroke-width="1.5"/>
+          <text class="seq-participant" x="296" y="28" text-anchor="middle">Zeverse API</text>
+          <rect x="484" y="8" width="112" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="540" y="28" text-anchor="middle">Workflow cache</text>
+          <rect x="652" y="8" width="100" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="702" y="28" text-anchor="middle">LLM</text>
+          <!-- Lifelines -->
+          <line x1="80" y1="42" x2="80" y2="385" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="296" y1="42" x2="296" y2="385" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="540" y1="42" x2="540" y2="385" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="702" y1="42" x2="702" y2="385" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <!-- msgs -->
+          <line x1="80" y1="58" x2="296" y2="58" stroke="#34d399" stroke-width="1.6" marker-end="url(#hrSolid)"/>
+          <text class="seq-msg" x="175" y="54" text-anchor="middle">POST /api/harness/route</text>
+          <rect class="seq-frame" x="318" y="68" width="200" height="52"/>
+          <text class="seq-msg-sm" x="318" y="82">resolve repoId · requireRepo</text>
+          <text class="seq-msg-sm" x="318" y="94">matchWorkflowKeyword?</text>
+          <text class="seq-msg-sm" x="318" y="106">else harness dry-run · else hub LLM</text>
+          <line x1="296" y1="138" x2="540" y2="138" stroke="#34d399" stroke-width="1.6" marker-end="url(#hrSolid)"/>
+          <text class="seq-msg" x="410" y="134" text-anchor="middle">loadWorkflows(repo)</text>
+          <line x1="540" y1="158" x2="296" y2="158" stroke="#9aa3b2" stroke-dasharray="6 5" stroke-width="1.4" marker-end="url(#hrDash)"/>
+          <text class="seq-msg" x="410" y="154" text-anchor="middle">YAML workflow defs</text>
+          <line x1="296" y1="188" x2="702" y2="188" stroke="#34d399" stroke-width="1.6" marker-end="url(#hrSolid)"/>
+          <text class="seq-msg" x="490" y="182" text-anchor="middle">chat · catalog + rules (fallback path)</text>
+          <line x1="702" y1="212" x2="296" y2="212" stroke="#9aa3b2" stroke-dasharray="6 5" stroke-width="1.4" marker-end="url(#hrDash)"/>
+          <text class="seq-msg" x="490" y="208" text-anchor="middle">JSON / prose</text>
+          <line x1="296" y1="248" x2="80" y2="248" stroke="#9aa3b2" stroke-dasharray="6 5" stroke-width="1.4" marker-end="url(#hrDash)"/>
+          <text class="seq-msg" x="175" y="244" text-anchor="middle">200 { type, workflow?, answer?, … }</text>
+          <text class="seq-note" x="80" y="278" text-anchor="middle">Bolt posts Run / Pick / Cancel</text>
+          <text class="seq-note" x="80" y="292" text-anchor="middle">or surfaces answer/clarify text</text>
+        </svg>
+      </figure>
+
+      <figure class="diagram seq-diagram" aria-label="Sequence harness execute">
+        <figcaption>Figure 2c — Sequence: confirmed <code>POST /api/harness/execute</code> → policy → <code>startRun</code> → runner session → git remote (polling happens in parallel).</figcaption>
+        <svg class="seq-canvas" viewBox="0 0 780 460" xmlns="http://www.w3.org/2000/svg" role="img">
+          <defs>
+            <marker id="exSolid" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#34d399"/></marker>
+            <marker id="exDash" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto"><path d="M9,0 L9,6 L0,3 z" fill="#9aa3b2"/></marker>
+          </defs>
+          <rect x="24" y="8" width="96" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="72" y="28" text-anchor="middle">Client</text>
+          <rect x="204" y="8" width="112" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="260" y="28" text-anchor="middle">Zeverse API</text>
+          <rect x="396" y="8" width="104" height="32" rx="5" fill="#1e2430" stroke="#34d399" stroke-width="1.5"/>
+          <text class="seq-participant" x="448" y="28" text-anchor="middle">Runner</text>
+          <rect x="596" y="8" width="120" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="656" y="28" text-anchor="middle">Git remote</text>
+          <line x1="72" y1="42" x2="72" y2="445" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="260" y1="42" x2="260" y2="445" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="448" y1="42" x2="448" y2="445" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="656" y1="42" x2="656" y2="445" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="72" y1="56" x2="260" y2="56" stroke="#34d399" stroke-width="1.6" marker-end="url(#exSolid)"/>
+          <text class="seq-msg" x="160" y="52" text-anchor="middle">POST /api/harness/execute</text>
+          <rect class="seq-frame" x="268" y="64" width="168" height="40"/>
+          <text class="seq-msg-sm" x="276" y="80">assertAllowed(policy)</text>
+          <text class="seq-msg-sm" x="276" y="94">merge inputs · validate · findWorkflow</text>
+          <line x1="260" y1="128" x2="448" y2="128" stroke="#34d399" stroke-width="1.6" marker-end="url(#exSolid)"/>
+          <text class="seq-msg" x="348" y="124" text-anchor="middle">startRun(…)</text>
+          <line x1="260" y1="156" x2="72" y2="156" stroke="#9aa3b2" stroke-dasharray="6 5" stroke-width="1.4" marker-end="url(#exDash)"/>
+          <text class="seq-msg" x="155" y="152" text-anchor="middle">{ runId, repoId, workflow }</text>
+          <text class="seq-note" x="348" y="178" text-anchor="middle">appendAuditLog · run continues async</text>
+          <line x1="448" y1="202" x2="656" y2="202" stroke="#34d399" stroke-width="1.6" marker-end="url(#exSolid)"/>
+          <text class="seq-msg" x="548" y="198" text-anchor="middle">git clone / fetch · checkout baseBranch</text>
+          <rect class="seq-frame" x="320" y="214" width="256" height="56"/>
+          <text class="seq-msg-sm" x="328" y="230">For each YAML step: executor</text>
+          <text class="seq-msg-sm" x="328" y="244">llm · shell · edit · gates · …</text>
+          <text class="seq-msg-sm" x="328" y="258">logs → state/… · events NDJSON</text>
+          <line x1="448" y1="292" x2="656" y2="292" stroke="#34d399" stroke-width="1.6" marker-end="url(#exSolid)"/>
+          <text class="seq-msg" x="548" y="288" text-anchor="middle">push archon/… branch · open PR</text>
+          <line x1="72" y1="328" x2="260" y2="328" stroke="#34d399" stroke-width="1.6" marker-end="url(#exSolid)"/>
+          <text class="seq-msg" x="160" y="324" text-anchor="middle">GET /api/runs/:id/events (poll)</text>
+          <line x1="260" y1="352" x2="72" y2="352" stroke="#9aa3b2" stroke-dasharray="6 5" stroke-width="1.4" marker-end="url(#exDash)"/>
+          <text class="seq-msg" x="160" y="348" text-anchor="middle">NDJSON tail · milestones</text>
+        </svg>
+      </figure>
+
+      <h3>3.3 Direct run flow (UI / automation)</h3>
+      <p>
+        When the caller already chose repo + workflow + inputs (for example the dashboard run form or CI):
+        <code>POST /api/run-workflow</code> with <code>repoId</code>, <code>workflow</code>, optional <code>prompt</code>/<code>inputs</code>/<code>baseBranch</code>.
+        The server merges <code>requirement</code> from <code>prompt</code>, autofills known inputs from URL patterns (Freshrelease, Google Doc, GitHub PR, etc.) where declared,
+        then calls <code>startRun</code> immediately — no harness proposal step.
+      </p>
+
+      <figure class="diagram seq-diagram" aria-label="Sequence direct run workflow">
+        <figcaption>Figure 2d — Sequence: <code>POST /api/run-workflow</code> (no harness route; policy not enforced via <code>assertAllowed</code> — secure network/exposure separately).</figcaption>
+        <svg class="seq-canvas" viewBox="0 0 720 340" xmlns="http://www.w3.org/2000/svg" role="img">
+          <defs>
+            <marker id="drSolid" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#34d399"/></marker>
+            <marker id="drDash" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto"><path d="M9,0 L9,6 L0,3 z" fill="#9aa3b2"/></marker>
+          </defs>
+          <rect x="40" y="8" width="88" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="84" y="28" text-anchor="middle">Dashboard / CI</text>
+          <rect x="236" y="8" width="112" height="32" rx="5" fill="#1e2430" stroke="#34d399" stroke-width="1.5"/>
+          <text class="seq-participant" x="292" y="28" text-anchor="middle">Zeverse API</text>
+          <rect x="452" y="8" width="96" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="500" y="28" text-anchor="middle">Runner</text>
+          <rect x="588" y="8" width="100" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="638" y="28" text-anchor="middle">Git + tools</text>
+          <line x1="84" y1="42" x2="84" y2="320" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="292" y1="42" x2="292" y2="320" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="500" y1="42" x2="500" y2="320" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="638" y1="42" x2="638" y2="320" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="84" y1="58" x2="292" y2="58" stroke="#34d399" stroke-width="1.6" marker-end="url(#drSolid)"/>
+          <text class="seq-msg" x="180" y="54" text-anchor="middle">POST /api/run-workflow</text>
+          <rect class="seq-frame" x="300" y="66" width="200" height="44"/>
+          <text class="seq-msg-sm" x="308" y="82">requireRepo · findWorkflow</text>
+          <text class="seq-msg-sm" x="308" y="96">autofillInputs(FR/doc/PR URLs)</text>
+          <line x1="292" y1="132" x2="500" y2="132" stroke="#34d399" stroke-width="1.6" marker-end="url(#drSolid)"/>
+          <text class="seq-msg" x="390" y="128" text-anchor="middle">startRun(…)</text>
+          <line x1="292" y1="160" x2="84" y2="160" stroke="#9aa3b2" stroke-dasharray="6 5" stroke-width="1.4" marker-end="url(#drDash)"/>
+          <text class="seq-msg" x="175" y="156" text-anchor="middle">{ runId }</text>
+          <line x1="500" y1="200" x2="638" y2="200" stroke="#34d399" stroke-width="1.6" marker-end="url(#drSolid)"/>
+          <text class="seq-msg" x="565" y="196" text-anchor="middle">clone · execute steps · push</text>
+        </svg>
+      </figure>
+
+      <h3>3.4 Inside <code>startRun</code> (conceptual)</h3>
+      <ol>
+        <li>Create <code>runId</code> and initial <code>RunState</code> (all steps <code>queued</code>).</li>
+        <li><strong>Session</strong> — Acquire ephemeral clone or managed workspace; create run branch when using branch isolation.</li>
+        <li><strong>Template context</strong> — Bind <code>inputs.*</code>; each finished step exposes <code>steps.&lt;id&gt;.output</code> to later steps.</li>
+        <li><strong>Step loop</strong> — For each step: evaluate <code>when:</code>, resolve retries/loops, dispatch executor, append logs + emit events.</li>
+        <li><strong>Blocking steps</strong> — <code>approval</code> and <code>wait-thread-reply</code> pause until POST approve/reject/thread-reply.</li>
+        <li><strong>Terminal</strong> — Evaluate workflow <code>gates</code>; optionally run <code>onGateFail</code>; commit/push/open PR if applicable; cleanup ephemeral dir.</li>
+      </ol>
+
+      <div class="callout">
+        Compare: <strong>direct</strong> <code>/api/run-workflow</code> skips route + confirmation — suitable when automation already chose workflow and inputs.
+        Slack almost always uses the harness so users confirm destructive or repo-wide actions.
+      </div>
+    </section>
+
+    <section id="rules-skills">
+      <h2>4. Rules, skills &amp; repo-local context</h2>
+      <p>
+        Zeverse is deliberately <strong>repository-agnostic</strong>: one hub process may orchestrate dozens of unrelated codebases (React apps, services, libraries).
+        The control plane cannot embed framework-specific lint rules, naming conventions, security constraints, or testing commands for each product —
+        those evolve with the application and belong <strong>next to that application’s source</strong>.
+      </p>
+
+      <h3>4.1 Why add rules / skills in each target repo?</h3>
+      <dl class="faq">
+        <dt>Single source of truth for humans and automation</dt>
+        <dd>
+          Markdown “rules” document stack choices (framework versions, bundler, CSS strategy), coding conventions, how tests are run,
+          and domain vocabulary. The same files can align Cursor / IDE assistants with Zeverse behaviour so engineers do not maintain two conflicting playbooks.
+        </dd>
+        <dt>Better routing and safer automation</dt>
+        <dd>
+          Server-side harness fallback routing attaches aggregated repo rules text to the router LLM system prompt (<code>loadRepoRules</code> in <code>server/src/workflows.ts</code>),
+          improving workflow selection and reducing proposals that contradict documented conventions.
+        </dd>
+        <dt>Faster onboarding after import</dt>
+        <dd>
+          Running <code>bootstrap-rules</code> fingerprints the tree (layouts, configs, CI hints) and opens a PR that seeds <code>.archon/rules/*.md</code>
+          — teams start from structured commentary instead of blank prompts.
+        </dd>
+        <dt>Scoped blast radius</dt>
+        <dd>
+          When rules live in-repo and ship via PR, reviewers see convention changes alongside code ownership boundaries; the hub never needs redeploying to adopt them.
+        </dd>
+      </dl>
+
+      <h3>4.2 Where rules are loaded from (implementation)</h3>
+      <p>The server merges text from the workflow checkout/cache in this order (see <code>loadRepoRules</code>):</p>
+      <ol>
+        <li><code>.archon/rules/*.md</code> — Primary Archon/Zeverse convention files (often produced or edited after bootstrap).</li>
+        <li><code>.cursorrules</code> — Single-file Cursor rule bundle at repo root (truncated if extremely large).</li>
+        <li><code>.cursor/rules/*.md</code> — Cursor-style modular rules.</li>
+      </ol>
+      <p>
+        Files are concatenated with section headers so the router LLM can attribute snippets. Total combined length is capped to protect token budgets.
+      </p>
+
+      <h3>4.3 Bootstrap workflow (<code>bootstrap-rules</code>)</h3>
+      <p>
+        Trigger via UI “+ Rules”, Slack button after <code>add-repo</code>, or <code>POST /api/repos/:id/bootstrap-rules</code>.
+        A dedicated workflow clones the repo, fingerprints structure, asks an LLM to draft Markdown files under <code>.archon/rules/</code> (for example tech stack, conventions, testing),
+        applies them into the workspace, then follows the normal branch isolation path — branch name pattern <code>archon/bootstrap-rules/&lt;runId&gt;</code> — resulting in a GitHub PR teams review like any other change.
+      </p>
+
+      <figure class="diagram seq-diagram" aria-label="Bootstrap rules sequence">
+        <figcaption>Figure 4a — Sequence: <code>bootstrap-rules</code> run — fingerprint repo → LLM drafts <code>.archon/rules/*.md</code> → apply → push branch → open PR (same isolation mechanics as other workflows).</figcaption>
+        <svg class="seq-canvas" viewBox="0 0 760 360" xmlns="http://www.w3.org/2000/svg" role="img">
+          <defs>
+            <marker id="bsSolid" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#34d399"/></marker>
+            <marker id="bsDash" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto"><path d="M9,0 L9,6 L0,3 z" fill="#9aa3b2"/></marker>
+          </defs>
+          <rect x="36" y="8" width="104" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="88" y="28" text-anchor="middle">Operator</text>
+          <rect x="216" y="8" width="112" height="32" rx="5" fill="#1e2430" stroke="#34d399" stroke-width="1.5"/>
+          <text class="seq-participant" x="272" y="28" text-anchor="middle">Runner</text>
+          <rect x="412" y="8" width="88" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="456" y="28" text-anchor="middle">LLM</text>
+          <rect x="568" y="8" width="120" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="628" y="28" text-anchor="middle">GitHub</text>
+          <line x1="88" y1="42" x2="88" y2="335" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="272" y1="42" x2="272" y2="335" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="456" y1="42" x2="456" y2="335" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="628" y1="42" x2="628" y2="335" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="88" y1="58" x2="272" y2="58" stroke="#34d399" stroke-width="1.6" marker-end="url(#bsSolid)"/>
+          <text class="seq-msg" x="175" y="54" text-anchor="middle">POST …/bootstrap-rules</text>
+          <line x1="272" y1="92" x2="628" y2="92" stroke="#34d399" stroke-width="1.6" marker-end="url(#bsSolid)"/>
+          <text class="seq-msg" x="448" y="88" text-anchor="middle">clone target repo · fingerprint tree</text>
+          <line x1="272" y1="132" x2="456" y2="132" stroke="#34d399" stroke-width="1.6" marker-end="url(#bsSolid)"/>
+          <text class="seq-msg" x="360" y="128" text-anchor="middle">draft-rules prompt → fenced paths</text>
+          <line x1="456" y1="162" x2="272" y2="162" stroke="#9aa3b2" stroke-dasharray="6 5" stroke-width="1.4" marker-end="url(#bsDash)"/>
+          <text class="seq-msg" x="360" y="158" text-anchor="middle">Markdown blocks</text>
+          <rect class="seq-frame" x="176" y="176" width="192" height="44"/>
+          <text class="seq-msg-sm" x="184" y="192">apply step writes .archon/rules/</text>
+          <text class="seq-msg-sm" x="184" y="208">review · commit on archon/bootstrap-rules/…</text>
+          <line x1="272" y1="246" x2="628" y2="246" stroke="#34d399" stroke-width="1.6" marker-end="url(#bsSolid)"/>
+          <text class="seq-msg" x="448" y="242" text-anchor="middle">push branch · REST/gh → PR URL</text>
+          <text class="seq-note" x="272" y="288" text-anchor="middle">Same executor pipeline as feature workflows</text>
+        </svg>
+      </figure>
+
+      <h3>4.4 Relationship to workflow YAML prompts</h3>
+      <p>
+        Individual workflow steps define their own LLM prompts in YAML; authors often embed repo-specific instructions there or rely on shell steps to read files from the workspace.
+        Keeping durable conventions in <code>.archon/rules/</code> avoids duplicating long boilerplate across every workflow while remaining merge-reviewed like application docs.
+      </p>
+
+      <h3>4.5 “Skills” in naming</h3>
+      <p>
+        Product docs sometimes pair “rules &amp; skills” with bootstrap — practically this means curated markdown capability/context packs plus executable workflows/commands under <code>.archon/</code>
+        shipped by that repo. Zeverse executes whatever workflows exist in <code>.archon/workflows/</code>; naming aligns with Cursor terminology for familiarity across tooling.
+      </p>
+    </section>
+
+    <section id="integration">
+      <h2>5. Integrating another repository</h2>
+      <h3>5.1 Register the remote</h3>
+      <p>
+        Add the git origin to Zeverse’s registry (stored in <code>repos.json</code> at the project root by default). Surfaces:
+      </p>
+      <ul>
+        <li><strong>UI</strong> — Import flow in the dashboard.</li>
+        <li><strong>HTTP</strong> — <code>POST /api/repos</code> with URL and optional name.</li>
+        <li><strong>Slack</strong> — <code>add-repo</code> (gated by <code>ARCHON_REPO_ADMIN_USER_IDS</code> and channel policy).</li>
+      </ul>
+      <p>
+        Zeverse stores the remote URL; it does not require a permanent local clone at import time. Each run typically creates an
+        <strong>ephemeral clone</strong> under <code>state/&lt;repoId&gt;/runs/&lt;runId&gt;/work/</code>, or reuses a
+        <strong>managed workspace</strong> at <code>repos/&lt;id&gt;/</code> when the workflow sets <code>keepWorkspace: true</code>
+        (serializes runs per repo, faster for huge trees).
+      </p>
+      <h3>5.5 Onboarding checklist</h3>
+      <ol>
+        <li>Import repo → verify row appears in <code>repos.json</code> with correct <code>defaultBranch</code>.</li>
+        <li>Add at least one workflow YAML under <code>.archon/workflows/</code>; refresh cache via UI or <code>POST /api/repos/:id/refresh-workflows</code> when iterating locally.</li>
+        <li>Optional: add <code>harness.yaml</code> with <code>catalog</code>/<code>route</code> for custom routing prompts.</li>
+        <li>Optional: run <a href="#rules-skills">bootstrap-rules</a> to seed <code>.archon/rules/</code>, or maintain <code>.cursorrules</code> / <code>.cursor/rules/</code>.</li>
+        <li>Configure secrets at hub root (<code>GITHUB_TOKEN</code>, integration tokens) so pushes and PR creation succeed.</li>
+        <li>Smoke-test: direct run via UI or <code>/api/run-workflow</code>, then Slack harness proposal → execute.</li>
+      </ol>
+      <h3>5.2 Add workflows and optional harness</h3>
+      <p>In the target repo, create YAML files under <code>.archon/workflows/</code>. Example shape:</p>
+      <pre><code>name: dev
+description: Plan, implement, validate, review, PR.
+inputs:
+  - id: requirement
+    label: Feature requirement
+    required: true
+steps:
+  - id: plan
+    kind: llm
+    prompt: |
+      Break this requirement into ordered tasks:
+      {{inputs.requirement}}</code></pre>
+      <p>
+        Optionally add <code>.archon/workflows/harness.yaml</code> with steps such as <code>catalog</code> and <code>route</code>.
+        When present, <code>POST /api/harness/route</code> dry-runs those steps via <code>runSingleStep</code> to pick a workflow.
+        If missing or parsing fails, the server falls back to <strong>keyword routing</strong> and then <strong>server-side LLM routing</strong>
+        using the workflow list and <code>.archon/rules</code> context.
+      </p>
+      <h3>5.3 Bootstrap rules (optional)</h3>
+      <p>
+        <code>POST /api/repos/:id/bootstrap-rules</code> fingerprints the codebase and opens a PR adding <code>.archon/rules/*.md</code>
+        so future runs get consistent repo context.
+      </p>
+      <h3>5.4 Branch targeting</h3>
+      <p>
+        Override the base branch per run: API body <code>baseBranch</code>, UI branch field, or Slack <code>branch=&lt;name&gt;</code>.
+        Defaults to the repo’s <code>defaultBranch</code> in <code>repos.json</code>.
+      </p>
+    </section>
+
+    <section id="workflow-model">
+      <h2>6. Workflow model and step kinds</h2>
+
+      <h3>6.1 YAML shape and templating</h3>
+      <p>
+        Each workflow file declares <code>name</code> (referenced when starting runs and routing), human-readable <code>description</code>,
+        ordered <code>inputs</code> (each with <code>id</code>, <code>label</code>, optional <code>required</code>), and <code>steps</code>.
+        Before each step runs, prompts and shell commands are rendered through the template engine:
+        <code>{{inputs.&lt;id&gt;}}</code> expands user-supplied strings; <code>{{steps.&lt;stepId&gt;.output}}</code> expands prior step stdout/text results,
+        enabling pipelines such as “lint → feed failures back into fix loop”.
+      </p>
+      <p>
+        Optional fields on steps include <code>when:</code> (expression — empty/false/no/0 skips), <code>retries</code> / <code>retryBackoffMs</code>
+        for flaky commands, <code>loopUntil</code> plus <code>maxIterations</code> for convergence loops, and <code>continueOnError</code> where supported so validation failures do not abort early unless gates demand success.
+      </p>
+
+      <h3>6.2 Workflow-level options</h3>
+      <table>
+        <thead>
+          <tr><th>Field</th><th>Meaning</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>isolation</code></td><td><code>branch</code> (default) creates <code>archon/&lt;wf&gt;/&lt;runId&gt;</code>, commits, pushes, opens PR; <code>none</code> skips that pattern.</td></tr>
+          <tr><td><code>keepWorkspace</code></td><td>Persistent clone under <code>repos/&lt;id&gt;/</code> vs ephemeral per-run workspace.</td></tr>
+          <tr><td><code>gates</code></td><td>Step ids that must end in <code>success</code> for the run to pass.</td></tr>
+          <tr><td><code>onGateFail</code></td><td>Optional child workflow dispatch when gates fail.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>6.3 Step kinds (platform)</h3>
+      <table>
+        <thead>
+          <tr><th>Kind</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>llm</code></td><td>LLM prompt step.</td></tr>
+          <tr><td><code>review</code></td><td>Same as LLM, marked semantically as review.</td></tr>
+          <tr><td><code>shell</code></td><td>Shell command in the session working tree.</td></tr>
+          <tr><td><code>apply</code></td><td>Write files from fenced code blocks (<code>path=…</code>).</td></tr>
+          <tr><td><code>patch</code></td><td>Apply unified diffs (<code>git apply</code>).</td></tr>
+          <tr><td><code>edit</code></td><td>Search/replace edits on existing files.</td></tr>
+          <tr><td><code>gdoc-fetch</code></td><td>Fetch Google Doc text; optional comments.</td></tr>
+          <tr><td><code>gdoc-comment</code></td><td>Post comments from queries JSON.</td></tr>
+          <tr><td><code>gdoc-reply</code></td><td>Reply to GDoc comment threads.</td></tr>
+          <tr><td><code>gdoc-resolve</code></td><td>Resolve GDoc threads.</td></tr>
+          <tr><td><code>gdoc-suggest</code></td><td>Tracked-change suggestions.</td></tr>
+          <tr><td><code>fr-fetch</code></td><td>Fetch Freshrelease task + comments.</td></tr>
+          <tr><td><code>fr-create</code></td><td>Create FR issues from fenced JSON.</td></tr>
+          <tr><td><code>fr-comment</code></td><td>Comment on an FR task.</td></tr>
+          <tr><td><code>workflow</code></td><td>Dispatch a child workflow.</td></tr>
+          <tr><td><code>approval</code></td><td>Pause for human approve/reject (Slack/UI/both).</td></tr>
+          <tr><td><code>wait-thread-reply</code></td><td>Pause; post in Slack thread; resume on reply (optional file expectations).</td></tr>
+          <tr><td><code>har-analyze</code></td><td>Parse HAR and summarize API calls.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>6.4 Representative workflow names (examples only)</h3>
+      <p>
+        The hub README lists typical automation bundles teams define per repo — names are not fixed by core Zeverse; they ship as YAML in each application repo.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Typical trigger</th><th>Role</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>harness</code></td><td>implicit</td><td>Route / catalog steps used during <code>/api/harness/route</code> dry-run.</td></tr>
+          <tr><td><code>prd-analysis</code></td><td>Google Doc URL</td><td>PRD vs codebase analysis; GDoc comments.</td></tr>
+          <tr><td><code>fr-task-finisher</code></td><td>Freshrelease URL</td><td>Discover → implement → test → PR → comment.</td></tr>
+          <tr><td><code>fr-analyze</code></td><td>FR URL</td><td>Analysis-only cross-check vs codebase.</td></tr>
+          <tr><td><code>dev</code></td><td>feature text</td><td>Plan → implement → validate → review.</td></tr>
+          <tr><td><code>fix-bug</code></td><td>bug description</td><td>Diagnose → fix → test → review.</td></tr>
+          <tr><td><code>debug</code></td><td>interactive</td><td>HAR/screenshots → analysis thread.</td></tr>
+          <tr><td><code>ask</code></td><td>question</td><td>Read-only Q&amp;A.</td></tr>
+        </tbody>
+      </table>
+      <p class="subtitle" style="margin-top:1rem;">
+        Zeverse ships executors and harness glue; YAML bodies for these workflows live <em>only</em> in the repositories you register.
+      </p>
+    </section>
+
+    <section id="run-lifecycle">
+      <h2>7. Run lifecycle</h2>
+      <p>
+        A run receives a <code>runId</code>, is tracked in memory and on disk, moves through queued steps, streams logs, and emits
+        NDJSON <strong>events</strong> to <code>state/&lt;repoId&gt;/runs/&lt;runId&gt;.events.ndjson</code> for UIs and the Slack bot
+        to poll (<code>GET /api/runs/:id/events</code>). Steps may pause for <code>approval</code> or <code>wait-thread-reply</code>.
+        After all steps complete, workflow <code>gates</code> are evaluated; branch isolation triggers commit, push,
+        and PR creation when configured. Ephemeral workspaces are removed after completion.
+      </p>
+
+      <h3>7.1 State and logs on disk</h3>
+      <ul>
+        <li><strong>Per-run folder</strong> — Under <code>state/&lt;repoId&gt;/runs/</code>: serialized run state JSON, textual logs for tail endpoints, NDJSON event stream for milestone UX.</li>
+        <li><strong>In-memory active runs</strong> — Recent runs stay addressable while the server process holds them; persisted copies survive restarts when written.</li>
+        <li><strong>Working tree</strong> — Ephemeral clones avoid cross-run contamination; managed workspaces reuse one directory with locking.</li>
+      </ul>
+
+      <h3>7.2 Git outcomes</h3>
+      <p>
+        When <code>isolation: branch</code>, successful edits commit on <code>archon/&lt;workflow&gt;/&lt;runId&gt;</code> (pattern may vary by implementation details),
+        push to <code>origin</code>, then open or update a pull request via <code>gh</code> or GitHub REST when tokens permit.
+        Empty runs may still produce empty commits depending on workflow — callers rely on logs for truth.
+      </p>
+
+      <figure class="diagram" aria-label="Run lifecycle rail">
+        <figcaption>Figure 3 — Run phases (segments pulse in sequence to suggest pipeline progress).</figcaption>
+        <svg class="rail-wrap rail-svg" viewBox="0 0 720 100" xmlns="http://www.w3.org/2000/svg" role="img">
+          <g class="rail-seg">
+            <rect x="8" y="28" width="100" height="44" rx="6" fill="#1e2430" stroke="#2a3140" stroke-width="1.5" />
+            <text x="58" y="50" text-anchor="middle" fill="#e8eaed" font-size="11" font-weight="600">Queued</text>
+            <text x="58" y="64" text-anchor="middle" fill="#9aa3b2" font-size="9">startRun</text>
+          </g>
+          <g class="rail-seg">
+            <rect x="118" y="28" width="100" height="44" rx="6" fill="#1e2430" stroke="#2a3140" stroke-width="1.5" />
+            <text x="168" y="50" text-anchor="middle" fill="#e8eaed" font-size="11" font-weight="600">Session</text>
+            <text x="168" y="64" text-anchor="middle" fill="#9aa3b2" font-size="9">clone / lock</text>
+          </g>
+          <g class="rail-seg">
+            <rect x="228" y="28" width="100" height="44" rx="6" fill="#1e2430" stroke="#2a3140" stroke-width="1.5" />
+            <text x="278" y="48" text-anchor="middle" fill="#e8eaed" font-size="11" font-weight="600">Steps</text>
+            <text x="278" y="62" text-anchor="middle" fill="#9aa3b2" font-size="8">executors · approval · thread</text>
+          </g>
+          <g class="rail-seg">
+            <rect x="338" y="28" width="100" height="44" rx="6" fill="#1e2430" stroke="#2a3140" stroke-width="1.5" />
+            <text x="388" y="50" text-anchor="middle" fill="#e8eaed" font-size="11" font-weight="600">Gate pass</text>
+            <text x="388" y="64" text-anchor="middle" fill="#9aa3b2" font-size="9">workflow gates</text>
+          </g>
+          <g class="rail-seg">
+            <rect x="448" y="28" width="120" height="44" rx="6" fill="#1e2430" stroke="#2a3140" stroke-width="1.5" />
+            <text x="508" y="50" text-anchor="middle" fill="#e8eaed" font-size="11" font-weight="600">Push / PR</text>
+            <text x="508" y="64" text-anchor="middle" fill="#9aa3b2" font-size="9">if branch isolation</text>
+          </g>
+          <g class="rail-seg">
+            <rect x="578" y="28" width="124" height="44" rx="6" fill="#1e2430" stroke="#2a3140" stroke-width="1.5" />
+            <text x="640" y="50" text-anchor="middle" fill="#e8eaed" font-size="11" font-weight="600">Finish</text>
+            <text x="640" y="64" text-anchor="middle" fill="#9aa3b2" font-size="9">cleanup ephemeral</text>
+          </g>
+          <path class="flow-path" d="M 108 50 L 115 50" />
+          <path class="flow-path" d="M 218 50 L 225 50" />
+          <path class="flow-path" d="M 328 50 L 335 50" />
+          <path class="flow-path" d="M 438 50 L 445 50" />
+          <path class="flow-path" d="M 568 50 L 575 50" />
+        </svg>
+      </figure>
+
+      <figure class="diagram seq-diagram" aria-label="Sequence approval gate">
+        <figcaption>Figure 3b — Sequence: blocking <code>approval</code> (or <code>wait-thread-reply</code>) pauses the runner until HTTP resume; events stream shows <code>awaiting_approval</code>.</figcaption>
+        <svg class="seq-canvas" viewBox="0 0 760 380" xmlns="http://www.w3.org/2000/svg" role="img">
+          <defs>
+            <marker id="apSolid" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#34d399"/></marker>
+            <marker id="apDash" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto"><path d="M9,0 L9,6 L0,3 z" fill="#9aa3b2"/></marker>
+          </defs>
+          <rect x="48" y="8" width="96" height="32" rx="5" fill="#1e2430" stroke="#34d399" stroke-width="1.5"/>
+          <text class="seq-participant" x="96" y="28" text-anchor="middle">Runner</text>
+          <rect x="292" y="8" width="112" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="348" y="28" text-anchor="middle">Zeverse API</text>
+          <rect x="556" y="8" width="120" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="616" y="28" text-anchor="middle">Human / Slack UI</text>
+          <line x1="96" y1="42" x2="96" y2="355" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="348" y1="42" x2="348" y2="355" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="616" y1="42" x2="616" y2="355" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <rect class="seq-frame" x="28" y="52" width="136" height="44"/>
+          <text class="seq-msg-sm" x="36" y="68">Steps 1…n−1 complete</text>
+          <text class="seq-msg-sm" x="36" y="84">emit step_finished · logs</text>
+          <rect class="seq-frame" x="108" y="108" width="160" height="52"/>
+          <text class="seq-msg-sm" x="116" y="124">approval step: wait on</text>
+          <text class="seq-msg-sm" x="116" y="138">pending promise map</text>
+          <text class="seq-msg-sm" x="116" y="152">emit awaiting_approval</text>
+          <line x1="616" y1="188" x2="348" y2="188" stroke="#9aa3b2" stroke-dasharray="6 5" stroke-width="1.4" marker-end="url(#apDash)"/>
+          <text class="seq-msg" x="478" y="184" text-anchor="middle">GET …/events (poll) sees awaiting_approval</text>
+          <line x1="616" y1="228" x2="348" y2="228" stroke="#34d399" stroke-width="1.6" marker-end="url(#apSolid)"/>
+          <text class="seq-msg" x="478" y="224" text-anchor="middle">POST /api/runs/:id/approve</text>
+          <rect class="seq-frame" x="268" y="236" width="160" height="36"/>
+          <text class="seq-msg-sm" x="276" y="252">resolveApproval(runId)</text>
+          <text class="seq-msg-sm" x="276" y="264">promise resolves → runner wakes</text>
+          <line x1="348" y1="292" x2="96" y2="292" stroke="#34d399" stroke-width="1.6" marker-end="url(#apSolid)"/>
+          <text class="seq-msg" x="210" y="288" text-anchor="middle">continue remaining steps</text>
+          <text class="seq-note" x="96" y="328" text-anchor="middle"><code>wait-thread-reply</code>: POST …/thread-reply instead</text>
+        </svg>
+      </figure>
+    </section>
+
+    <section id="harness">
+      <h2>8. Harness and Slack pipeline</h2>
+      <p>
+        Slack, the UI, and direct API calls converge on two harness endpoints: <strong>route</strong> (propose or answer) and
+        <strong>execute</strong> (start a real run after confirmation). The Slack bot always shows confirmation before a write-capable workflow runs.
+      </p>
+
+      <figure class="diagram seq-diagram" aria-label="Slack ingress sequence">
+        <figcaption>Figure 8a — Sequence: Slack user → Bolt (Socket Mode) → <code>ARCHON_SERVER_URL</code> harness APIs (same JSON contracts as curl).</figcaption>
+        <svg class="seq-canvas" viewBox="0 0 780 340" xmlns="http://www.w3.org/2000/svg" role="img">
+          <defs>
+            <marker id="slSolid" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#34d399"/></marker>
+            <marker id="slDash" markerWidth="10" markerHeight="10" refX="1" refY="3" orient="auto"><path d="M9,0 L9,6 L0,3 z" fill="#9aa3b2"/></marker>
+          </defs>
+          <rect x="32" y="8" width="88" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="76" y="28" text-anchor="middle">Slack user</text>
+          <rect x="212" y="8" width="96" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="260" y="28" text-anchor="middle">Slack Bolt</text>
+          <rect x="416" y="8" width="120" height="32" rx="5" fill="#1e2430" stroke="#34d399" stroke-width="1.5"/>
+          <text class="seq-participant" x="476" y="28" text-anchor="middle">Zeverse API</text>
+          <rect x="628" y="8" width="100" height="32" rx="5" fill="#1e2430" stroke="#2a3140"/>
+          <text class="seq-participant" x="678" y="28" text-anchor="middle">Hub LLM</text>
+          <line x1="76" y1="42" x2="76" y2="315" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="260" y1="42" x2="260" y2="315" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="476" y1="42" x2="476" y2="315" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="678" y1="42" x2="678" y2="315" stroke="#3d4a5c" stroke-dasharray="5 6"/>
+          <line x1="76" y1="58" x2="260" y2="58" stroke="#34d399" stroke-width="1.6" marker-end="url(#slSolid)"/>
+          <text class="seq-msg" x="165" y="54" text-anchor="middle">mention / slash / DM</text>
+          <line x1="260" y1="92" x2="476" y2="92" stroke="#34d399" stroke-width="1.6" marker-end="url(#slSolid)"/>
+          <text class="seq-msg" x="360" y="88" text-anchor="middle">POST /api/harness/route + threadContext</text>
+          <line x1="476" y1="122" x2="678" y2="122" stroke="#34d399" stroke-width="1.6" marker-end="url(#slSolid)"/>
+          <text class="seq-msg" x="572" y="118" text-anchor="middle">LLM (infer repo / route fallback)</text>
+          <line x1="678" y1="152" x2="476" y2="152" stroke="#9aa3b2" stroke-dasharray="6 5" stroke-width="1.4" marker-end="url(#slDash)"/>
+          <line x1="476" y1="182" x2="260" y2="182" stroke="#9aa3b2" stroke-dasharray="6 5" stroke-width="1.4" marker-end="url(#slDash)"/>
+          <text class="seq-msg" x="360" y="178" text-anchor="middle">proposal | answer | clarify JSON</text>
+          <rect class="seq-frame" x="180" y="198" width="160" height="40"/>
+          <text class="seq-msg-sm" x="188" y="214">Bot posts Block Kit buttons</text>
+          <text class="seq-msg-sm" x="188" y="228">Run · Pick · Cancel</text>
+          <line x1="260" y1="262" x2="476" y2="262" stroke="#34d399" stroke-width="1.6" marker-end="url(#slSolid)"/>
+          <text class="seq-msg" x="360" y="258" text-anchor="middle">POST /api/harness/execute (interaction payload)</text>
+          <text class="seq-note" x="476" y="298" text-anchor="middle">Uses port 3100 API — not Vite 5173</text>
+        </svg>
+      </figure>
+
+      <h3>8.1 <code>POST /api/harness/route</code></h3>
+      <p>Resolution order (see <code>server/src/routes/harness.ts</code>):</p>
+      <ol>
+        <li><strong>Repo</strong> — Use <code>repoId</code> from the request if provided; otherwise infer via LLM over the registry (or clarify if none/ambiguous).</li>
+        <li><strong>Keyword shortcut</strong> — If <code>matchWorkflowKeyword</code> matches, return <code>type: proposal</code> with high confidence.</li>
+        <li><strong>Per-repo harness</strong> — If a workflow named <code>harness</code> exists and has a <code>route</code> step, optionally run <code>catalog</code>, then <code>route</code> via <code>runSingleStep</code>. Parse JSON from the route output; if workflow is known and confidence ≥ <strong>0.6</strong>, return <code>proposal</code>; else <code>answer</code>. On failure, fall through.</li>
+        <li><strong>Server LLM fallback</strong> — Build a catalog of non-harness workflows, merge <a href="#rules-skills">repo rules text</a> (<code>loadRepoRules</code>: <code>.archon/rules</code>, <code>.cursorrules</code>, <code>.cursor/rules</code>) when non-empty, and ask the LLM for JSON: <code>workflow</code>, <code>inputs</code>, <code>alternatives</code>, <code>confidence</code>, <code>reason</code>. Same 0.6 threshold; unknown workflow or low confidence yields <code>answer</code> with explanatory text.</li>
+      </ol>
+      <p>Response <code>type</code> is one of:</p>
+      <ul>
+        <li><code>proposal</code> — Suggests <code>workflow</code>, <code>inputs</code>, <code>alternatives</code>, <code>confidence</code>, <code>reason</code>.</li>
+        <li><code>answer</code> — Direct LLM reply when routing is uncertain or the user should not get an auto-run.</li>
+        <li><code>clarify</code> — Missing <code>repoId</code> or invalid repo; includes <code>question</code> and <code>missing</code>.</li>
+      </ul>
+      <h3>8.2 <code>POST /api/harness/execute</code></h3>
+      <p>
+        Validates <code>repoId</code> and <code>workflow</code>, applies <strong>policy</strong> (<code>assertAllowed</code>),
+        merges inputs (including <code>requirement</code> from <code>prompt</code>), extracts Freshrelease URLs into <code>frUrl</code> when needed,
+        checks required workflow inputs, then calls <code>startRun</code> and appends one line to <code>state/audit.log</code>.
+      </p>
+
+      <figure class="diagram" aria-label="Harness sequence">
+        <figcaption>Figure 8b — Harness path: the highlighted step cycles to show the active phase (live loop).</figcaption>
+        <div class="harness-steps" id="harnessPhaseBox" aria-live="polite">
+          <div class="h-step" data-i="0"><strong>1. Prompt</strong><br />User, UI, or slash command sends natural language + optional repo/thread context.</div>
+          <div class="h-step" data-i="1"><strong>2. Route</strong><br /><code>/api/harness/route</code> — keyword, harness.yaml, or server LLM.</div>
+          <div class="h-step" data-i="2"><strong>3. Surface</strong><br />Proposal with Run / Pick another / Cancel, or answer / clarify.</div>
+          <div class="h-step" data-i="3"><strong>4. Confirm</strong><br />User approves the chosen workflow and inputs.</div>
+          <div class="h-step" data-i="4"><strong>5. Execute</strong><br /><code>/api/harness/execute</code> — policy, <code>startRun</code>, audit.</div>
+          <div class="h-step" data-i="5"><strong>6. Observe</strong><br />Poll logs/events; milestones in Slack when configured.</div>
+        </div>
+      </figure>
+
+      <h3>8.3 Slack surfaces (expanded)</h3>
+      <ul>
+        <li><strong>Slash commands</strong> — <code>/archon-harness</code> is the universal router; <code>/archon-dev</code>, <code>/archon-prd</code>, <code>/archon-add-repo</code> specialize common flows.</li>
+        <li><strong>@mentions</strong> — Invite the bot to a channel, then mention it; behaviour matches harness routing + confirmation.</li>
+        <li><strong>DMs</strong> — Same behaviour without requiring a mention.</li>
+        <li><strong>Thread context</strong> — Follow-ups send earlier turns as <code>threadContext</code> so “now fix it” resolves against prior diagnosis.</li>
+        <li><strong>PRD threads</strong> — Commands such as “answer this” vs “update the PRD doc” sync discussion back to Google Docs (see repository README).</li>
+      </ul>
+
+      <h3>8.4 Example payloads (conceptual)</h3>
+      <pre><code>// Route — minimal
+POST /api/harness/route
+{ "prompt": "fix flaky login test on checkout", "repoId": "my-app" }
+
+// Route — Slack supplies thread history
+POST /api/harness/route
+{ "prompt": "apply the fix", "repoId": "my-app",
+  "threadContext": "assistant: … user: …", "surface": "slack" }
+
+// Execute — after user clicks Run
+POST /api/harness/execute
+{
+  "repoId": "my-app",
+  "workflow": "fix-bug",
+  "prompt": "fix flaky login test on checkout",
+  "inputs": { "requirement": "fix flaky login test on checkout" },
+  "slackUser": "U123",
+  "channel": "C456",
+  "surface": "slack",
+  "baseBranch": "main"
+}</code></pre>
+    </section>
+
+    <section id="policy">
+      <h2>9. Policy, audit, and observability</h2>
+
+      <h3>9.1 Policy enforcement</h3>
+      <p>
+        Operators may tighten blast radius without code changes by uncommenting / editing <code>policy:</code> inside <code>config/archon.yaml</code>:
+        restrict which <code>repoId</code> values, workflow names, or Slack channel ids may invoke runs.
+        Defaults commonly allow all (<code>["*"]</code>). Checks run inside <code>/api/harness/execute</code> today (direct <code>/api/run-workflow</code> does not call the same gate — secure those paths separately if exposed).
+        Violations surface as HTTP <strong>403</strong> with a machine-readable <code>reason</code>.
+      </p>
+
+      <h3>9.2 Audit trail</h3>
+      <p>
+        Each successful harness execution appends one JSON object per line to <code>state/audit.log</code>, capturing who triggered work (Slack user id when known),
+        channel, repo, workflow name, run id, and surface — enabling downstream SIEM ingestion or quarterly reviews. Secrets never appear in these records by design.
+      </p>
+
+      <h3>9.3 Observability streams</h3>
+      <ul>
+        <li><strong>Logs</strong> — Human-readable append-only logs per run for <code>/api/logs/:id</code> tailing.</li>
+        <li><strong>Events</strong> — Structured NDJSON (<code>step_started</code>, <code>step_finished</code>, <code>awaiting_approval</code>, <code>gates_failed</code>, <code>run_finished</code>, …) for deterministic automation.</li>
+        <li><strong>Milestones</strong> — Optional <code>runner.milestone_steps</code> list maps significant step ids to Slack bot announcements.</li>
+      </ul>
+    </section>
+
+    <section id="reference">
+      <h2>10. API and environment reference</h2>
+      <h3>10.1 Selected HTTP endpoints</h3>
+      <table>
+        <thead>
+          <tr><th>Method</th><th>Path</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>GET</td><td><code>/api/repos</code></td><td>List registered repos.</td></tr>
+          <tr><td>POST</td><td><code>/api/repos</code></td><td>Register repo URL / name.</td></tr>
+          <tr><td>DELETE</td><td><code>/api/repos/:id</code></td><td>Remove from registry.</td></tr>
+          <tr><td>POST</td><td><code>/api/repos/:id/bootstrap-rules</code></td><td>Start rules bootstrap run.</td></tr>
+          <tr><td>POST</td><td><code>/api/repos/:id/refresh-workflows</code></td><td>Refresh cached workflows.</td></tr>
+          <tr><td>GET</td><td><code>/api/workflows?repoId=</code></td><td>List workflows for repo.</td></tr>
+          <tr><td>POST</td><td><code>/api/run-workflow</code></td><td>Start run (direct).</td></tr>
+          <tr><td>POST</td><td><code>/api/harness/route</code></td><td>Unified routing.</td></tr>
+          <tr><td>POST</td><td><code>/api/harness/execute</code></td><td>Confirmed workflow execution.</td></tr>
+          <tr><td>GET</td><td><code>/api/runs/:id</code></td><td>Run state; optional <code>?repoId=</code> loads from disk, else lookup by run id.</td></tr>
+          <tr><td>GET</td><td><code>/api/logs/:id</code></td><td>Tail logs.</td></tr>
+          <tr><td>GET</td><td><code>/api/runs/:id/events</code></td><td>Tail NDJSON events.</td></tr>
+          <tr><td>POST</td><td><code>/api/runs/:id/approve</code></td><td>Approval gate.</td></tr>
+          <tr><td>POST</td><td><code>/api/runs/:id/reject</code></td><td>Reject gate.</td></tr>
+          <tr><td>POST</td><td><code>/api/runs/:id/thread-reply</code></td><td>Resume <code>wait-thread-reply</code>.</td></tr>
+          <tr><td>GET</td><td><code>/api/policy</code></td><td>Read-only policy snapshot.</td></tr>
+          <tr><td>GET</td><td><code>/health</code></td><td>Health check.</td></tr>
+        </tbody>
+      </table>
+      <h3>10.2 Environment (from <code>.env.example</code>)</h3>
+      <p>
+        Copy <code>.env.example</code> to <code>.env</code> at the repo root. Key variables: <code>CLOUDVERSE_API_KEY</code>,
+        <code>CLOUDVERSE_BASE_URL</code>, <code>ARCHON_SERVER_URL</code> (API for the bot — port 3100, not the Vite UI),
+        <code>ARCHON_UI_URL</code>, Slack tokens, <code>ARCHON_DEFAULT_REPO_ID</code>, <code>ARCHON_REPO_ADMIN_USER_IDS</code>,
+        <code>GOOGLE_SERVICE_ACCOUNT_PATH</code>, <code>FRESHRELEASE_*</code>, <code>GITHUB_TOKEN</code>.
+      </p>
+
+      <h3>10.3 Zeverse hub repository layout (reference)</h3>
+      <table>
+        <thead>
+          <tr><th>Path</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>config/archon.yaml</code></td><td>LLM provider, runner timeouts, optional policy.</td></tr>
+          <tr><td><code>repos.json</code></td><td>Imported repo registry (<code>id</code>, <code>origin</code>, <code>defaultBranch</code>).</td></tr>
+          <tr><td><code>server/</code></td><td>Express app, harness routes, workflow cache + loading, runner executors.</td></tr>
+          <tr><td><code>ui/</code></td><td>Dashboard — import repos, browse workflows, trigger runs, tail logs.</td></tr>
+          <tr><td><code>slack-bot/</code></td><td>Bolt app — forwards prompts to harness endpoints, interactive buttons.</td></tr>
+          <tr><td><code>state/</code></td><td>Runtime state: per-repo runs, audit log, artifacts (gitignored patterns apply).</td></tr>
+          <tr><td><code>repos/</code></td><td>Optional persistent clones when workflows opt into managed workspaces.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <footer style="margin-top:3rem;padding-top:1.5rem;border-top:1px solid var(--border);color:var(--muted);font-size:0.85rem;">
+      Zeverse design doc — generated for the zeverse repository. Workflow YAML and business rules live in each target repo under <code>.archon/</code>.
+    </footer>
+  </div>
+
+  <script>
+    (function () {
+      var steps = document.querySelectorAll("#harnessPhaseBox .h-step");
+      var i = 0;
+      function tick() {
+        for (var j = 0; j < steps.length; j++) {
+          steps[j].classList.toggle("on", j === i);
+        }
+        i = (i + 1) % steps.length;
+      }
+      tick();
+      setInterval(tick, 2200);
+    })();
+  </script>
+</body>
+</html>
