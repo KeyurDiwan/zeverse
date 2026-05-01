@@ -1,0 +1,96 @@
+# Example: Freshrelease task finisher using pgvector `retrieve` instead of grep-based discover.
+# Copy into your target repo as `.zeverse/workflows/fr-task-finisher.yaml` and adjust steps.
+#
+# Requires hub `config/zeverse.yaml`: index.enabled, POSTGRES_URL, and one successful
+# `POST /api/repos/:id/reindex` (or watcher) so the managed clone under `repos/<id>/` is indexed.
+
+name: fr-task-finisher
+description: >-
+  Fetch FR card → hybrid retrieve codebase context → implement with SEARCH/REPLACE → validate → PR.
+inputs:
+  - id: fr_url
+    label: Freshrelease task URL
+    required: true
+keepWorkspace: true
+isolation: branch
+gates:
+  - apply-edits-check
+steps:
+  - id: fr-fetch
+    kind: fr-fetch
+    frUrl: "{{inputs.fr_url}}"
+    includeComments: true
+
+  - id: intent
+    kind: llm
+    prompt: |
+      From this Freshrelease card and comments, output a short bullet list of search keywords
+      and likely module names (no prose). End with one line: SUMMARY: <one sentence>.
+      Card payload:
+      {{steps.fr-fetch.output}}
+
+  - id: retrieve-context
+    kind: retrieve
+    prompt: |
+      Task context and keywords:
+      {{steps.intent.output}}
+
+      Full card (trimmed):
+      {{steps.fr-fetch.output}}
+    retrieveTopK: 14
+    retrieveExpand: imports+callers
+    retrieveMaxChars: 95000
+
+  - id: implement
+    kind: llm
+    prompt: |
+      You must fix the issue described in the Freshrelease card using ONLY SEARCH/REPLACE edits.
+      Copy SEARCH text verbatim from the retrieved snippets below.
+
+      Retrieved codebase context:
+      {{steps.retrieve-context.output}}
+
+      Card:
+      {{steps.fr-fetch.output}}
+
+  - id: apply-edits
+    kind: edit
+    contentFrom: "{{steps.implement.output}}"
+
+  - id: apply-edits-check
+    kind: shell
+    command: git diff --stat && git diff
+    continueOnError: true
+
+  - id: implement-retry
+    kind: llm
+    when: "{{steps.apply-edits-check.output}}"
+    prompt: |
+      Prior apply output reported failures. Retry SEARCH/REPLACE using errors and file context.
+      Errors / diff:
+      {{steps.apply-edits-check.output}}
+
+      Retrieved context:
+      {{steps.retrieve-context.output}}
+
+  - id: apply-edits-retry
+    kind: edit
+    when: "{{steps.implement-retry.output}}"
+    contentFrom: "{{steps.implement-retry.output}}"
+
+  - id: test
+    kind: shell
+    command: npm run test -- --watchAll=false 2>&1 || true
+    continueOnError: true
+
+  - id: summary
+    kind: llm
+    prompt: |
+      Summarise the FR fix for the PR body (what changed, tests).
+      Test output:
+      {{steps.test.output}}
+
+  - id: fr-comment
+    kind: fr-comment
+    frUrl: "{{inputs.fr_url}}"
+    bodyFrom: "{{steps.summary.output}}"

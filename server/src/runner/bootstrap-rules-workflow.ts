@@ -1,5 +1,6 @@
 import type { Workflow } from "../workflows";
 import type { Repo } from "../repos";
+import { loadHubWorkflowCatalogForPrompt } from "./hubWorkflowCatalog";
 
 const FINGERPRINT_SCRIPT = `
 echo "## Directory structure (depth 3)"
@@ -50,6 +51,8 @@ done
  * post-run commit/push/openPR path in the runner.
  */
 export function buildBootstrapRulesWorkflow(repo: Repo): Workflow {
+  const hubWorkflowCatalog = loadHubWorkflowCatalogForPrompt();
+
   return {
     name: "bootstrap-rules",
     description: "Analyse the codebase and generate .zeverse/rules/*.md files via PR",
@@ -70,6 +73,10 @@ You are given a fingerprint of the repository **${repo.name}** (origin: ${repo.o
 Your job is to produce a set of Markdown rule files that will live under \`.zeverse/rules/\` in the repository.
 These rules are consumed by an AI coding assistant to understand the project conventions, tech stack, testing patterns, and domain.
 
+**Mandatory:** you MUST include a file at exactly \`.zeverse/rules/zeverse-workflows.md\` that documents how to run **each** workflow defined in the Zeverse hub catalog below against this repository. For each workflow: name, purpose, declared **inputs** (from the YAML), sensible **defaults for this repo** inferred from the fingerprint (install/test commands, package manager, CI), \`isolation\` / branch behavior if present, and what humans or agents should verify before running. If a hub workflow clearly does not apply to this stack, say so briefly instead of inventing steps.
+
+You MUST **also** emit additional repo-specific rule files (tech stack, testing, conventions, etc.) as described below — hub workflows plus extra rules for this codebase.
+
 Each rule file MUST be emitted as a fenced code block with a \`path=\` attribute, like:
 
 \`\`\`path=.zeverse/rules/tech-stack.md
@@ -79,7 +86,7 @@ Each rule file MUST be emitted as a fenced code block with a \`path=\` attribute
 
 The opening fence line must contain only the fence, an optional language tag, and \`path=...\` (or \`file=...\`); do not append extra words or comments on that same line.
 
-Produce **one file per concern**. Suggested files (skip any that don't apply to this repo):
+Produce **one file per concern** for repo-specific content (skip any that don't apply). Suggested names:
 - \`tech-stack.md\` — languages, frameworks, runtimes, key dependencies, build & dev commands
 - \`conventions.md\` — folder layout, naming conventions, import style, module pattern
 - \`testing.md\` — test framework, file naming, location, how to run tests, coverage expectations
@@ -92,10 +99,14 @@ Rules for writing good rule files:
 1. Be specific and actionable — prefer "Use \`vitest\` with \`@testing-library/react\`" over "Use appropriate testing tools".
 2. Include concrete examples, but use INDENTED CODE BLOCKS (4-space indent) or \`inline code\` for short snippets. **NEVER use triple-backtick fenced code blocks inside the file content** — this breaks the parser that extracts the files.
 3. Reference actual paths from the fingerprint (e.g. "Tests live in \`src/__tests__/\`").
-4. Keep each file 40-120 lines. Don't pad with filler.
+4. Keep each file 40-120 lines unless \`zeverse-workflows.md\` needs slightly more to cover all hub workflows.
 5. Do NOT duplicate information that already exists in rules listed under "Existing rules" in the fingerprint.
 6. The frontmatter is NOT required — just start with a Markdown heading.
 7. For tables, use standard Markdown tables (pipes). For command examples, use \`inline code\` or 4-space indented blocks.
+
+--- ZEVERSE HUB WORKFLOWS (authoritative for this Zeverse instance) ---
+${hubWorkflowCatalog}
+--- END ZEVERSE HUB WORKFLOWS ---
 
 --- BEGIN REPO FINGERPRINT ---
 {{steps.fingerprint.output}}
@@ -110,7 +121,7 @@ Rules for writing good rule files:
       {
         id: "summary",
         kind: "llm",
-        prompt: `Below is the output of a step that generated .zeverse/rules/*.md files for the repository **${repo.name}**.
+        prompt: `Below is the output of a step that generated .zeverse/rules/*.md files for the repository **${repo.name}** (including \`zeverse-workflows.md\` for hub workflows and any repo-specific rule files).
 Summarise what was generated in 2-4 sentences for use as a pull-request description body. Be concise. Do not use markdown headings.
 
 {{steps.draft-rules.output}}`,

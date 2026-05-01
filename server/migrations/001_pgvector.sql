@@ -1,0 +1,7 @@
+-- Zeverse code index schema (pgvector).
+-- Dimension for embedding vector must match config index.embedding.dim at DDL time — applied programmatically by ensureSchema().
+--
+-- Manual smoke test:
+--   CREATE DATABASE zeverse;
+--   \c zeverse
+--   CREATE EXTENSION IF NOT EXISTS vector;

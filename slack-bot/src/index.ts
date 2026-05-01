@@ -366,6 +366,13 @@ async function inferWorkflowFromServer(repoId: string, prompt: string): Promise<
 // ─── Add-repo helpers ───────────────────────────────────────────────────────
 // Read on each check so we always see the current process.env (and avoid stale
 // values if the process loaded env in an unexpected order at startup).
+
+/** When false (`0`, `false`, `no`), add-repo only updates the registry; no automatic bootstrap. */
+function addRepoAutoBootstrapEnabled(): boolean {
+  const v = (process.env.ZEVERSE_ADD_REPO_AUTO_BOOTSTRAP ?? "1").trim().toLowerCase();
+  return v !== "0" && v !== "false" && v !== "no";
+}
+
 function getRepoAdminUserIds(): Set<string> {
   return new Set(
     (process.env.ZEVERSE_REPO_ADMIN_USER_IDS ?? "")
@@ -541,6 +548,11 @@ async function handleAddRepoMessage(
   }
 
   const repo = result.repo!;
+  const autoBootstrap = addRepoAutoBootstrapEnabled();
+  const bootstrapNote = autoBootstrap
+    ? "\n\n_Next: starting rules & skills (Zeverse workflows guide + repo rules). I’ll post the PR link here when ready._"
+    : "";
+
   await client.chat.postMessage({
     channel,
     thread_ts: threadTs,
@@ -551,6 +563,7 @@ async function handleAddRepoMessage(
       `Origin: ${repo.origin}`,
       `Default branch: \`${repo.defaultBranch}\``,
       `<${ZEVERSE_UI_URL}|Open Zeverse>`,
+      bootstrapNote,
     ].join("\n"),
     blocks: [
       {
@@ -562,7 +575,8 @@ async function handleAddRepoMessage(
             `ID: \`${repo.id}\`  |  Name: \`${repo.name}\``,
             `Origin: ${repo.origin}`,
             `Default branch: \`${repo.defaultBranch}\``,
-          ].join("\n"),
+            bootstrapNote,
+          ].filter(Boolean).join("\n"),
         },
       },
       {
@@ -585,6 +599,12 @@ async function handleAddRepoMessage(
       },
     ],
   });
+
+  if (autoBootstrap) {
+    startBootstrapRulesFromSlack(repo.id, channel, threadTs, client, logger).catch(
+      (err) => logger.error("startBootstrapRulesFromSlack (add-repo) error:", err)
+    );
+  }
 }
 
 interface RunResponse {
@@ -715,6 +735,8 @@ interface RunState {
   workflow?: string;
   status: string;
   steps: { id: string; status: string; output: string; error?: string }[];
+  /** Set when the runner opened a PR (branch isolation post-run). */
+  prUrl?: string;
   /** Present when the run failed due to gate rules (no step may be marked `failed`). */
   gateFailures?: { stepId: string; error: string }[];
 }
@@ -848,10 +870,9 @@ async function pollRunAndPostResult(
     }
 
     const prStep = state.steps.find((s) => s.id === "open-pr");
-    if (prStep?.output) {
-      const prUrlMatch = prStep.output.match(/PR_URL=(https?:\/\/\S+)/);
-      if (prUrlMatch) sectionParts.push(`<${prUrlMatch[1]}|View PR on GitHub>`);
-    }
+    const prUrlFromStep = prStep?.output?.match(/PR_URL=(https?:\/\/\S+)/)?.[1];
+    const prHref = prUrlFromStep ?? state.prUrl;
+    if (prHref) sectionParts.push(`<${prHref}|View PR on GitHub>`);
 
     const reviewStep = state.steps.find((s) => s.id === "review");
     if (reviewStep?.output) {
@@ -2016,7 +2037,10 @@ function workflowListMrkdwn(repoId: string, workflows: WorkflowCatalogEntry[]): 
     lines.push(`• *\`${w.name}\`* — ${w.description}`);
     if (ins) lines.push(`  _Inputs:_\n   ${ins}`);
   }
-  if (lines.length === 1) lines.push("_No workflows (or only `harness`)._");
+  if (lines.length === 1)
+    lines.push(
+      "_Nothing to list here — `harness` is intentionally hidden from this catalog. If you expected `dev`, `fix-bug`, etc., add `.zeverse/workflows/*.yaml` on the repo **default branch** (as registered in the hub), then refresh: `POST /api/repos/<repo-id>/refresh-workflows` or use the hub UI._"
+    );
   return lines.join("\n");
 }
 
@@ -2487,6 +2511,25 @@ async function pollRunEvents(
             threadTs: thread_ts,
             expectFiles: Array.isArray(ev.expectFiles) ? ev.expectFiles : [],
           });
+        }
+
+        if (
+          ev.type === "retrieve_finished" &&
+          ev.stepId &&
+          Array.isArray(ev.files) &&
+          ev.files.length > 0
+        ) {
+          const key = `retrieve_finished:${ev.stepId}`;
+          if (!postedMilestones.has(key)) {
+            postedMilestones.add(key);
+            const preview = ev.files.slice(0, 15).map((f: string) => `\`${f}\``).join(", ");
+            const more = ev.files.length > 15 ? ` _(+${ev.files.length - 15} more)_` : "";
+            await client.chat.postMessage({
+              channel,
+              thread_ts,
+              text: `_Looking at:_ ${preview}${more}`,
+            });
+          }
         }
 
         if (ev.type === "step_finished" && ev.stepId && MILESTONE_STEPS.has(ev.stepId)) {
@@ -3021,12 +3064,13 @@ async function pollPrdRaiseAndReply(
     const openPrStep = state.steps.find((s) => s.id === "open-pr");
     const output = openPrStep?.output ?? "";
     const branchMatch = output.match(/BRANCH=(\S+)/);
-    const prUrlMatch = output.match(/PR_URL=(https?:\/\/\S+)/);
+    const prUrlMatch =
+      output.match(/PR_URL=(https?:\/\/\S+)/)?.[1] ?? state.prUrl;
 
     const parts: string[] = [`*PRD PR raised* — here’s the link for \`${repoId}\`.`, ""];
     let raised = 0;
     if (branchMatch) parts.push(`${++raised}. Branch: \`${branchMatch[1]}\``);
-    if (prUrlMatch) parts.push(`${++raised}. PR: <${prUrlMatch[1]}|View on GitHub>`);
+    if (prUrlMatch) parts.push(`${++raised}. PR: <${prUrlMatch}|View on GitHub>`);
     parts.push("");
     parts.push(
       `<${docUrl}|Open PRD in Google Docs>  |  <${ZEVERSE_UI_URL}/?run=${runId}|View raise-PR run in Zeverse>`
@@ -3564,6 +3608,49 @@ app.action("approval_reject", async ({ action, ack, body, client, logger }) => {
 
 // ─── Bootstrap rules helpers ────────────────────────────────────────────────
 
+async function startBootstrapRulesFromSlack(
+  repoId: string,
+  channel: string,
+  thread_ts: string,
+  client: any,
+  logger: any
+): Promise<void> {
+  try {
+    const res = await fetch(
+      `${zeverseBaseUrl()}/api/repos/${encodeURIComponent(repoId)}/bootstrap-rules`,
+      { method: "POST" }
+    );
+    const data = await zeverseResponseJson<{ runId?: string; error?: string }>(
+      res,
+      "POST /api/repos/:id/bootstrap-rules"
+    );
+    if (data.error) {
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `Failed to start bootstrap: ${data.error}`,
+      });
+      return;
+    }
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: `Rules bootstrap started (run \`${data.runId}\`). Follow progress in <${ZEVERSE_UI_URL}|Zeverse>.`,
+    });
+
+    pollBootstrapRun(data.runId!, repoId, channel, thread_ts, client, logger).catch(
+      (err: any) => logger.error("pollBootstrapRun error:", err)
+    );
+  } catch (err: any) {
+    logger.error("startBootstrapRulesFromSlack error:", err);
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: `Error starting bootstrap: ${err.message}`,
+    });
+  }
+}
+
 async function pollBootstrapRun(
   runId: string,
   repoId: string,
@@ -3651,40 +3738,12 @@ app.action("bootstrap_rules", async ({ action, ack, body, client, logger }) => {
     }).catch(() => {});
   }
 
-  try {
-    const res = await fetch(
-      `${zeverseBaseUrl()}/api/repos/${encodeURIComponent(repoId)}/bootstrap-rules`,
-      { method: "POST" }
-    );
-    const data = await zeverseResponseJson<{ runId?: string; error?: string }>(
-      res, "POST /api/repos/:id/bootstrap-rules"
-    );
-    if (data.error) {
-      await client.chat.postMessage({
-        channel,
-        thread_ts,
-        text: `Failed to start bootstrap: ${data.error}`,
-      });
-      return;
-    }
-    await client.chat.postMessage({
-      channel,
-      thread_ts,
-      text: `Rules bootstrap started (run \`${data.runId}\`). Follow progress in <${ZEVERSE_UI_URL}|Zeverse>.`,
-    });
-
-    pollBootstrapRun(data.runId!, repoId, channel, thread_ts, client, logger).catch(
-      (err: any) => logger.error("pollBootstrapRun error:", err)
-    );
-  } catch (err: any) {
-    logger.error("bootstrap_rules error:", err);
-    if (channel) {
-      await client.chat.postMessage({
-        channel, thread_ts,
-        text: `Error starting bootstrap: ${err.message}`,
-      });
-    }
+  if (!channel) {
+    logger.error("bootstrap_rules: missing channel on action body");
+    return;
   }
+
+  await startBootstrapRulesFromSlack(repoId, channel, thread_ts, client, logger);
 });
 
 app.action("open_hub_link", async ({ ack }) => {

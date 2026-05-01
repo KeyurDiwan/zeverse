@@ -11,6 +11,7 @@ import {
   executeShellStep,
   executeWorkflowStep,
 } from "./executors";
+import { executeRetrieveStep } from "./executors-retrieve";
 import {
   executeGDocFetchStep,
   executeGDocCommentStep,
@@ -186,6 +187,8 @@ async function executeStep(
       return executeWaitThreadReplyStep(step, ctx, repo.id, runId, state);
     case "har-analyze":
       return executeHarAnalyzeStep(step, ctx, repo.id, runId);
+    case "retrieve":
+      return executeRetrieveStep(step, ctx, repo.id, runId);
     default:
       throw new Error(
         `Unknown step kind: ${step.kind}. If you pulled a newer Zeverse, run "npm run build" in server/ (or use "npm run dev") and restart.`
@@ -604,41 +607,47 @@ async function runWorkflow(
     enforceGates(workflow, state, repo, config, baseBranch);
     if ((state.status as string) === "failed") return;
 
-    // Auto-commit + push + open PR for isolated runs
+    // Auto-commit + push + open PR for isolated runs (only when the workflow changed files)
     if (useIsolation) {
       try {
         const hasChanges = await session.hasUncommittedChanges();
-        if (hasChanges) {
+        if (!hasChanges) {
+          appendLog(
+            repo.id,
+            runId,
+            "No workspace changes after workflow steps — skipping commit, push, and PR"
+          );
+        } else {
           await session.commitAll(`chore(zeverse): ${runId.slice(0, 8)} workflow results`);
           appendLog(repo.id, runId, `Committed changes on branch ${session.runBranch}`);
+
+          await session.pushRunBranch();
+          appendLog(repo.id, runId, `Pushed branch ${session.runBranch} to origin`);
+
+          const summaryStep = state.steps.find((s) => s.id === "summary" && s.status === "success");
+          const prBody = summaryStep?.output
+            ? [
+                summaryStep.output,
+                "",
+                `**Run ID:** \`${runId}\``,
+                `**Base branch:** \`${session.baseBranch}\``,
+              ].join("\n")
+            : [
+                `Automated PR from Zeverse workflow **${workflow.name}**.`,
+                "",
+                `**Run ID:** \`${runId}\``,
+                `**Base branch:** \`${session.baseBranch}\``,
+                `**Prompt:** ${state.prompt}`,
+              ].join("\n");
+
+          const pr = await session.openPR({
+            title: `[zeverse] ${workflow.name}: ${state.prompt.slice(0, 80)}`,
+            body: prBody,
+            baseBranch: session.baseBranch,
+          });
+          state.prUrl = pr.url;
+          appendLog(repo.id, runId, `PR_URL=${pr.url}`);
         }
-
-        await session.pushRunBranch();
-        appendLog(repo.id, runId, `Pushed branch ${session.runBranch} to origin`);
-
-        const summaryStep = state.steps.find((s) => s.id === "summary" && s.status === "success");
-        const prBody = summaryStep?.output
-          ? [
-              summaryStep.output,
-              "",
-              `**Run ID:** \`${runId}\``,
-              `**Base branch:** \`${session.baseBranch}\``,
-            ].join("\n")
-          : [
-              `Automated PR from Zeverse workflow **${workflow.name}**.`,
-              "",
-              `**Run ID:** \`${runId}\``,
-              `**Base branch:** \`${session.baseBranch}\``,
-              `**Prompt:** ${state.prompt}`,
-            ].join("\n");
-
-        const pr = await session.openPR({
-          title: `[zeverse] ${workflow.name}: ${state.prompt.slice(0, 80)}`,
-          body: prBody,
-          baseBranch: session.baseBranch,
-        });
-        state.prUrl = pr.url;
-        appendLog(repo.id, runId, `PR_URL=${pr.url}`);
       } catch (err: any) {
         appendLog(repo.id, runId, `Post-run git/PR step failed (non-fatal): ${err.message}`);
       }

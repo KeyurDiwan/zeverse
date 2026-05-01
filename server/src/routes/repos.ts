@@ -4,6 +4,7 @@ import { refreshWorkflowsCache } from "../workflows";
 import { loadConfig } from "../config";
 import { buildBootstrapRulesWorkflow } from "../runner/bootstrap-rules-workflow";
 import { startRun } from "../runner";
+import { indexRepo } from "../index/indexer";
 
 export const repoRoutes = Router();
 
@@ -21,6 +22,21 @@ repoRoutes.post("/repos", (req: Request, res: Response) => {
     }
 
     const repo = addGitRepo({ url, name });
+    const config = loadConfig();
+    if (
+      config.index?.enabled &&
+      config.index.postgres_url?.trim() &&
+      config.index.watcher?.on_repo_add
+    ) {
+      void indexRepo({
+        hubConfig: config,
+        indexConfig: config.index,
+        repo,
+        full: true,
+      }).catch((e: any) =>
+        console.warn(`[repos] background index failed for ${repo.id}: ${e.message}`)
+      );
+    }
     res.status(201).json({ repo });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
@@ -41,6 +57,33 @@ repoRoutes.post("/repos/:id/refresh-workflows", (req: Request<{ id: string }>, r
     const repo = requireRepo(req.params.id);
     refreshWorkflowsCache(repo);
     res.json({ ok: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+repoRoutes.post("/repos/:id/reindex", async (req: Request<{ id: string }>, res: Response) => {
+  try {
+    const repo = requireRepo(req.params.id);
+    const config = loadConfig();
+    if (!config.index?.enabled || !config.index.postgres_url?.trim()) {
+      res.status(400).json({
+        error:
+          "Index disabled or postgres_url missing — enable index.enabled and set POSTGRES_URL in config/zeverse.yaml",
+      });
+      return;
+    }
+    const full = !!(req.body && req.body.full);
+    void indexRepo({
+      hubConfig: config,
+      indexConfig: config.index,
+      repo,
+      full,
+    }).then(
+      (r) => console.log(`[reindex] ${repo.id}`, r),
+      (e: Error) => console.error(`[reindex] ${repo.id}`, e)
+    );
+    res.json({ accepted: true, repoId: repo.id, full });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }

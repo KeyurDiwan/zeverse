@@ -167,6 +167,25 @@ You can target a specific branch for a run:
 
 Defaults to the repo's `defaultBranch` when omitted.
 
+### Code index (Postgres + pgvector)
+
+Optional Cursor-style retrieval for workflows:
+
+1. Run Postgres with pgvector (see `docker-compose.pgvector.yml`).
+2. Set `POSTGRES_URL` and flip `index.enabled: true` under `config/zeverse.yaml`.
+3. Ensure managed clones exist under `repos/<repoId>/` (import repo + first `keepWorkspace` run, or let `/api/repos/:id/reindex` clone via `ensureManagedClone`).
+4. Call `POST /api/repos/:id/reindex` or wait for the periodic watcher.
+5. Use `kind: retrieve` in workflows (see `examples/fr-task-finisher.yaml`).
+
+Smoke checks:
+
+```bash
+npm run check:retrieve --workspace=server
+npm run eval:retrieve --workspace=server -- config/eval-retrieval-gold.json
+```
+
+Shell steps with `continueOnError: true` append a `--- ZEVERSE_STRUCTURED_FAILURES ---` footer for `retrieveFailureFrom` expansion.
+
 ### Bootstrapping rules & skills
 
 After onboarding a repo (see **[Onboarding a new repository](#onboarding-a-new-repository)**), you can auto-generate `.zeverse/rules/*.md` files — these
@@ -237,6 +256,7 @@ Step kinds:
 | `approval`     | Pause the run and wait for a human to approve or reject before continuing (`surface: slack\|ui\|both`, `approvalTimeoutMs`) |
 | `wait-thread-reply` | Pause the run, post a question in the Slack thread, and resume when the user replies (with optional file attachments: HAR, screenshots). `expectFiles`, `threadReplyTimeoutMs` |
 | `har-analyze`  | Parse a HAR file and produce a structured summary of API calls grouped by status (failed, empty bodies, all). `harPathFrom`, `harPath`, `apiPrefix` |
+| `retrieve`     | Hybrid vector + BM25 retrieval over the indexed managed clone (`repos/<id>/`). Uses `prompt` as the query template; optional `retrieveTopK`, `retrieveExpand`, `retrieveMaxChars`, `retrieveFilterGlob`, `retrieveLanguages`, `retrieveFailureFrom` |
 
 Steps support an optional `when:` field — a template expression that is evaluated at
 runtime. When the rendered value is empty, `"false"`, `"no"`, or `"0"`, the step is
@@ -300,6 +320,7 @@ Templating uses `{{inputs.<id>}}` and `{{steps.<id>.output}}`.
 | POST   | `/api/repos`                  | Register a repo (`{url}`, optional `{name}`) |
 | DELETE | `/api/repos/:id`              | Remove a repo from the registry         |
 | POST   | `/api/repos/:id/refresh-workflows` | Force-refresh the cached workflows for a repo |
+| POST   | `/api/repos/:id/reindex`      | Queue background index of managed clone into Postgres/pgvector (`{ full?: boolean }`). Requires `index.enabled` + `POSTGRES_URL`. |
 | POST   | `/api/repos/:id/bootstrap-rules` | Analyse codebase and open a PR with `.zeverse/rules/*.md` files |
 | GET    | `/api/workflows?repoId=`      | List workflows for a repo               |
 | POST   | `/api/run-workflow`           | Start a run (`{repoId, workflow, prompt, baseBranch?}`) |
@@ -343,6 +364,7 @@ run ID, and surface. Secrets are never written to the log.
 
 Each step transition emits an NDJSON event to `state/<repoId>/runs/<runId>.events.ndjson`.
 Events include `step_started`, `step_finished`, `step_retry`, `step_skipped`,
+`retrieve_finished`,
 `awaiting_approval`, `approved`, `gates_failed`, and `run_finished`.
 
 The Slack bot polls `/api/runs/:id/events` and posts in-thread milestone messages

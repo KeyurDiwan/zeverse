@@ -8,6 +8,36 @@ export interface PolicyConfig {
   allowed_slack_channels: string[];
 }
 
+/** Hybrid retrieval weights (vector cosine vs BM25-style FTS rank). */
+export interface IndexHybridWeights {
+  vector: number;
+  bm25: number;
+}
+
+export interface IndexConfig {
+  enabled: boolean;
+  postgres_url: string;
+  embedding: {
+    provider: "cloudverse" | "local";
+    model: string;
+    dim: number;
+  };
+  chunking: {
+    max_lines: number;
+    max_tokens: number;
+  };
+  retrieval: {
+    top_k: number;
+    expand: string;
+    max_chars: number;
+    hybrid_weights: IndexHybridWeights;
+  };
+  watcher: {
+    poll_seconds: number;
+    on_repo_add: boolean;
+  };
+}
+
 export interface ZeverseConfig {
   llm: {
     provider: string;
@@ -27,6 +57,8 @@ export interface ZeverseConfig {
     clone_dir: string;
   };
   policy?: PolicyConfig;
+  /** Optional code index (pgvector + embeddings). When omitted, indexing is disabled. */
+  index?: IndexConfig;
 }
 
 function resolveEnvVars(value: string): string {
