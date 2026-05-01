@@ -327,7 +327,7 @@ by adding a `policy:` block to `config/zeverse.yaml`:
 
 ```yaml
 policy:
-  allowed_repos: ["ubx-ui", "freshid-ui-v2"]
+  allowed_repos: ["repo1", "repo2"]
   allowed_workflows: ["dev", "fix-bug", "test-write"]
   allowed_slack_channels: ["C-TEAM-ZEVERSE"]
 ```
@@ -359,7 +359,7 @@ workflow, and **always asks for confirmation** before running.
 ```
 User message (slash / @mention / DM)
   → POST /api/harness/route (repo pick → keyword shortcut → LLM routing)
-  → Bot posts: "I'd run `fix-bug` on `ubx-ui` — [Run] [Pick another…] [Cancel]"
+  → Bot posts: "I'd run `fix-bug` on `repo` — [Run] [Pick another…] [Cancel]"
   → User clicks Run
   → POST /api/harness/execute → startRun → poll → result in thread
 ```
@@ -449,7 +449,7 @@ ambiguous requests, and shows confirm buttons before running workflows:
 @ZeverseBot how does the billing router work?          # answered directly via LLM
 @ZeverseBot fix the login bug                          # proposes fix-bug → [Run] [Pick another] [Cancel]
 @ZeverseBot fix something                              # asks "Which repo / what exactly is broken?"
-@ZeverseBot ubx-ui pr-review fix flaky login test      # proposes pr-review → confirm buttons
+@ZeverseBot repoName pr-review fix flaky login test      # proposes pr-review → confirm buttons
 @ZeverseBot help                                       # friendly greeting + capabilities
 ```
 
@@ -487,7 +487,7 @@ questions, asks clarifying follow-ups, or proposes workflows with confirm button
 
 ```
 how does the billing router work?
-fix the login bug in ubx-ui
+fix the login bug in repoName
 ```
 
 ### Slack app setup
@@ -524,8 +524,8 @@ DM the bot: add-repo <git-url> [optional-name]
 Examples:
 
 ```
-@ZeverseBot add-repo https://github.com/freshdesk/ubx-ui.git
-@ZeverseBot add-repo https://github.com/freshdesk/ubx-ui.git my-custom-name
+@ZeverseBot add-repo https://github.com/freshdesk/repoName.git
+@ZeverseBot add-repo https://github.com/freshdesk/repoName.git my-custom-name
 /zeverse-add-repo https://github.com/freshdesk/freshid-ui-v2.git
 ```
 
@@ -562,7 +562,7 @@ Both checks must pass for the operation to proceed.
 
 Workflows `fr-card-creator`, `fr-analyze`, and `fr-task-finisher` call that API to fetch tasks, create cards, and post comments.
 
-The `fr-analyze` workflow in **ubx-ui** follows the same “FR Analyzer” behaviour as the Cursor agent (analysis-only, full comment context, structured sections); the hub uses **`fr-fetch`** and the LLM instead of calling Freshrelease MCP tools at runtime.
+The `fr-analyze` workflow in **repo** follows the same “FR Analyzer” behaviour as the Cursor agent (analysis-only, full comment context, structured sections); the hub uses **`fr-fetch`** and the LLM instead of calling Freshrelease MCP tools at runtime.
 
 The `fr-task-finisher` workflow uses a **discover -> implement -> retry** contract:
 
